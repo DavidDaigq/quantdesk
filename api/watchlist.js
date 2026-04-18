@@ -1,5 +1,5 @@
 const KV_URL   = 'https://devoted-eft-101724.upstash.io';
-const KV_TOKEN = 'gQAAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
+const KV_TOKEN = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
 const KEY = 'quantdesk_watchlist';
 
 module.exports = async function handler(req, res) {
