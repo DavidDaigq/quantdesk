@@ -8,6 +8,8 @@
   <meta name="apple-mobile-web-app-title" content="QuantDesk" />
   <title>QuantDesk — 美股量化交易</title>
   <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="theme-color" content="#378ADD" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
   <style>
     :root {
@@ -820,6 +822,13 @@ function renderTrades(trades) {
   window.setF = (f, el) => { document.querySelectorAll('#tradeFilter .btn').forEach(b => b.classList.remove('p')); el.classList.add('p'); draw(f); };
   draw('ALL');
 }
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
 </script>
 </body>
 </html>
