@@ -1,25 +1,21 @@
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-
   const sym = (req.query.symbol || '').toUpperCase().trim();
   const iv  = req.query.interval || '1d';
-  const rng = req.query.range    || '6mo';
+  const rng = req.query.range    || '1y';
   if (!sym) return res.status(400).json({ error: 'symbol required' });
-
   const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
-
   try {
     const now = new Date();
     const rangeMap = {
-      '1d':1,'5d':5,'1mo':30,'3mo':90,
-      '6mo':180,'1y':365,'2y':730,'3y':1095,'5y':1825
+      '1d':1,'5d':5,'1mo':30,'3mo':90,'6mo':180,
+      '1y':365,'2y':730,'3y':1095,'5y':1825,'10y':3650
     };
-    const days = rangeMap[rng] || 180;
+    const days = rangeMap[rng] || 365;
     const from = new Date(now - days*86400000);
     const toStr   = now.toISOString().slice(0,10);
     const fromStr = from.toISOString().slice(0,10);
 
-    // Polygon multiplier + timespan mapping
     const ivMap = {
       '1m':  {mult:1,  span:'minute'},
       '5m':  {mult:5,  span:'minute'},
@@ -32,12 +28,15 @@ module.exports = async function handler(req, res) {
     };
     const {mult, span} = ivMap[iv] || {mult:1, span:'day'};
 
+    // Polygon free tier: minute data only available for last 2 years
+    // Use higher limit for intraday
+    const limit = (span === 'minute' || span === 'hour') ? 5000 : 2000;
+
     const url = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/${mult}/${span}/${fromStr}/${toStr}`
-      + `?adjusted=true&sort=asc&limit=500&apiKey=${KEY}`;
+      + `?adjusted=true&sort=asc&limit=${limit}&apiKey=${KEY}`;
 
     const r = await fetch(url);
     if (!r.ok) return res.status(r.status).json({ error: 'polygon_' + r.status });
-
     const data = await r.json();
     if (data.status === 'ERROR') return res.status(400).json({ error: data.error || 'polygon_error' });
     if (!data.results || !data.results.length) return res.status(404).json({ error: 'no_data' });
@@ -46,17 +45,16 @@ module.exports = async function handler(req, res) {
     const last = results[results.length - 1];
     const prev = results[results.length - 2] || results[0];
 
-    // Convert to Yahoo Finance compatible format
     const out = {
       chart: {
         result: [{
           meta: {
             symbol: sym,
-            regularMarketPrice:   last.c,
-            chartPreviousClose:   prev.c,
-            regularMarketOpen:    last.o,
-            regularMarketDayHigh: last.h,
-            regularMarketDayLow:  last.l,
+            regularMarketPrice:   parseFloat(last.c.toFixed(2)),
+            chartPreviousClose:   parseFloat(prev.c.toFixed(2)),
+            regularMarketOpen:    parseFloat(last.o.toFixed(2)),
+            regularMarketDayHigh: parseFloat(last.h.toFixed(2)),
+            regularMarketDayLow:  parseFloat(last.l.toFixed(2)),
             regularMarketVolume:  last.v,
             fiftyTwoWeekHigh: Math.max(...results.map(r=>r.h)),
             fiftyTwoWeekLow:  Math.min(...results.map(r=>r.l)),
@@ -75,10 +73,8 @@ module.exports = async function handler(req, res) {
         error: null
       }
     };
-
     res.setHeader('Cache-Control', 's-maxage=60');
     return res.status(200).json(out);
-
   } catch(e) {
     return res.status(500).json({ error: e.message });
   }
