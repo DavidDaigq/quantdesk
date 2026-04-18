@@ -433,25 +433,19 @@ let priceChartInst = null, pnlChartInst = null, eqInst = null, radarInst = null;
 // ── Data fetcher — direct browser request to Yahoo Finance query2 (no CORS) ──
 async function yfFetch(symbol, interval, range, retries=3) {
   let lastErr;
-  // Try query2 first (no CORS), fallback to query1
-  const hosts = ['https://query2.finance.yahoo.com', 'https://query1.finance.yahoo.com'];
   for (let i=0; i<retries; i++) {
-    const host = hosts[i % hosts.length];
     try {
       const ctrl = new AbortController();
       const t = setTimeout(()=>ctrl.abort(), 20000);
-      const url = host+'/v8/finance/chart/'+encodeURIComponent(symbol)
-        +'?interval='+interval+'&range='+range+'&includePrePost=false';
+      const url = '/api/yf?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&range='+range;
       let r;
-      try { r = await fetch(url, {signal:ctrl.signal, mode:'cors'}); }
+      try { r = await fetch(url, {signal:ctrl.signal}); }
       finally { clearTimeout(t); }
       if (!r.ok) throw new Error('HTTP_'+r.status);
-      const data = await r.json();
-      if (data.chart && data.chart.error) throw new Error(data.chart.error.code||'API_ERROR');
-      return data;
+      return await r.json();
     } catch(e) {
       lastErr = e;
-      if (e.name==='AbortError') lastErr = new Error('TIMEOUT');
+      if (e.name==='AbortError') lastErr=new Error('TIMEOUT');
       if (i < retries-1) await new Promise(res=>setTimeout(res, 1200*(i+1)));
     }
   }
