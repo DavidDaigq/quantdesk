@@ -11,16 +11,29 @@ async function kvGet() {
 }
 
 async function kvSet(list) {
-  await fetch(`${KV_URL}/set/${KEY}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${KV_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(JSON.stringify(list))
+  const encoded = encodeURIComponent(JSON.stringify(list));
+  const r = await fetch(`${KV_URL}/set/${KEY}/${encoded}`, {
+    headers: { Authorization: `Bearer ${KV_TOKEN}` }
+  });
+  return r.json();
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    if (req.body) { resolve(req.body); return; }
+    let data = '';
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); }
+      catch(e) { resolve({}); }
+    });
+    req.on('error', reject);
   });
 }
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -30,14 +43,14 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ list });
     }
     if (req.method === 'POST') {
-      const { list } = req.body;
-      if (!Array.isArray(list)) return res.status(400).json({ error: 'invalid' });
-      await kvSet(list);
-      return res.status(200).json({ ok: true });
+      const body = await parseBody(req);
+      const list = body.list;
+      if (!Array.isArray(list)) return res.status(400).json({ error: 'invalid list' });
+      const result = await kvSet(list);
+      return res.status(200).json({ ok: true, result });
     }
+    return res.status(405).json({ error: 'method not allowed' });
   } catch(e) {
     return res.status(500).json({ error: e.message });
   }
 };
-
-
