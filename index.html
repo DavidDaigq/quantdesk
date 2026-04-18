@@ -208,8 +208,7 @@
     <div class="topbar">
       <input id="symIn" value="AAPL" placeholder="代码" onkeydown="if(event.key==='Enter')fetchQuote()" />
       <button class="btn p" onclick="fetchQuote()" id="fetchBtn">查询行情</button>
-      <span class="tag tg" id="mktSPY">SPY —</span>
-      <span class="tag" id="mktQQQ">QQQ —</span>
+      <span class="tag tg" id="dataSource">Yahoo Finance · 免费无限制</span>
       <span class="clock" id="clockEl">—</span>
     </div>
     <div class="content">
@@ -228,14 +227,14 @@
             <div class="status" id="chartStatus"></div>
           </div>
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px" id="tfTabs">
-            <button class="tf-btn" data-tf="1min"  data-fn="TIME_SERIES_INTRADAY" data-iv="1min"  onclick="switchTF(this)">1分</button>
-            <button class="tf-btn" data-tf="5min"  data-fn="TIME_SERIES_INTRADAY" data-iv="5min"  onclick="switchTF(this)">5分</button>
-            <button class="tf-btn" data-tf="15min" data-fn="TIME_SERIES_INTRADAY" data-iv="15min" onclick="switchTF(this)">15分</button>
-            <button class="tf-btn" data-tf="30min" data-fn="TIME_SERIES_INTRADAY" data-iv="30min" onclick="switchTF(this)">30分</button>
-            <button class="tf-btn" data-tf="60min" data-fn="TIME_SERIES_INTRADAY" data-iv="60min" onclick="switchTF(this)">1时</button>
-            <button class="tf-btn active" data-tf="daily"  data-fn="TIME_SERIES_DAILY"   data-iv=""      onclick="switchTF(this)">日K</button>
-            <button class="tf-btn" data-tf="weekly" data-fn="TIME_SERIES_WEEKLY"  data-iv=""      onclick="switchTF(this)">周K</button>
-            <button class="tf-btn" data-tf="monthly" data-fn="TIME_SERIES_MONTHLY" data-iv=""     onclick="switchTF(this)">月K</button>
+            <button class="tf-btn" data-tf="1min"  onclick="switchTF(this)">1分</button>
+            <button class="tf-btn" data-tf="5min"  onclick="switchTF(this)">5分</button>
+            <button class="tf-btn" data-tf="15min" onclick="switchTF(this)">15分</button>
+            <button class="tf-btn" data-tf="30min" onclick="switchTF(this)">30分</button>
+            <button class="tf-btn" data-tf="60min" onclick="switchTF(this)">1时</button>
+            <button class="tf-btn active" data-tf="daily"  onclick="switchTF(this)">日K</button>
+            <button class="tf-btn" data-tf="weekly" onclick="switchTF(this)">周K</button>
+            <button class="tf-btn" data-tf="monthly" onclick="switchTF(this)">月K</button>
           </div>
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
             <span style="font-size:11px;color:var(--text2);margin-right:2px">信号：</span>
@@ -362,9 +361,9 @@
             <div class="status" id="statusEl"></div>
           </div>
           <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
-          <div id="rateTip" style="display:none;margin-top:6px;padding:8px 10px;background:#FAEEDA;border-radius:8px;font-size:11px;color:#633806;line-height:1.6">
-            <b>免费API限制说明：</b>每分钟最多25次请求，每天500次。<br>
-            若提示频率限制，请等待 <b id="countdown">60</b> 秒后重试。回测只消耗1次请求。
+          <div id="rateTip" style="display:none;margin-top:6px;padding:8px 10px;background:#EAF3DE;border-radius:8px;font-size:11px;color:#27500A;line-height:1.6">
+            <b>数据源：Yahoo Finance（免费，无次数限制）</b><br>
+            如遇加载失败，通常是网络原因，稍等片刻重试即可。
           </div>
         </div>
 
@@ -425,8 +424,75 @@
 </div>
 
 <script>
-const AV_KEY = 'HZX5UB6WIGPIVEE6';
+// ── Yahoo Finance via allorigins proxy (no API key, no rate limit) ────────────
+const YF_PROXY = 'https://query1.finance.yahoo.com';
+
 let priceChartInst = null, pnlChartInst = null, eqInst = null, radarInst = null;
+
+// Fetch with timeout + retry
+async function yfFetch(url, retries=2) {
+  let lastErr;
+  for (let i=0; i<retries; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 15000);
+      const proxyUrl = 'https://allorigins.win/get?disableCache=true&url=' + encodeURIComponent(url);
+      let r;
+      try { r = await fetch(proxyUrl, {signal:ctrl.signal}); }
+      finally { clearTimeout(t); }
+      if (!r.ok) throw new Error('HTTP_'+r.status);
+      const wrapper = await r.json();
+      return JSON.parse(wrapper.contents);
+    } catch(e) {
+      lastErr = e;
+      if (i < retries-1) await new Promise(res=>setTimeout(res,1500));
+    }
+  }
+  throw lastErr;
+}
+
+function errMsg(e) {
+  if (!e) return '未知错误';
+  if (e.name==='AbortError' || e.message==='TIMEOUT') return '请求超时，请检查网络后重试';
+  if (e.message && e.message.includes('HTTP_')) return '服务器错误，请稍后重试';
+  if (e.message==='Failed to fetch' || e.message==='NETWORK') return '网络连接失败，请检查网络是否正常';
+  return '数据获取失败：' + (e.message||'未知');
+}
+
+// ── Yahoo Finance interval mapping ───────────────────────────────────────────
+// tf -> { interval, range }
+const YF_TF = {
+  '1min':   { interval:'1m',  range:'1d'  },
+  '5min':   { interval:'5m',  range:'5d'  },
+  '15min':  { interval:'15m', range:'5d'  },
+  '30min':  { interval:'30m', range:'1mo' },
+  '60min':  { interval:'60m', range:'1mo' },
+  'daily':  { interval:'1d',  range:'6mo' },
+  'weekly': { interval:'1wk', range:'5y'  },
+  'monthly':{ interval:'1mo', range:'10y' },
+};
+
+// Parse Yahoo Finance chart response into candles [{t,o,h,l,c,v}]
+function parseYFChart(data) {
+  try {
+    const res = data.chart.result[0];
+    const ts  = res.timestamp;
+    const q   = res.indicators.quote[0];
+    const candles = [];
+    for (let i=0; i<ts.length; i++) {
+      if (q.close[i]==null) continue;
+      candles.push({
+        t: new Date(ts[i]*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).replace(/\//g,'-'),
+        o: parseFloat((q.open[i]||q.close[i]).toFixed(2)),
+        h: parseFloat((q.high[i]||q.close[i]).toFixed(2)),
+        l: parseFloat((q.low[i]||q.close[i]).toFixed(2)),
+        c: parseFloat(q.close[i].toFixed(2)),
+        v: parseInt(q.volume[i]||0),
+      });
+    }
+    return candles;
+  } catch(e) { return []; }
+}
 
 const COLORS = { GMMA:'#1D9E75', MA:'#378ADD', RSI:'#D85A30', MACD:'#7F77DD', BB:'#BA7517' };
 const LABELS = { GMMA:'顾比均线', MA:'双均线', RSI:'RSI策略', MACD:'MACD', BB:'布林带' };
@@ -451,60 +517,7 @@ function setProgress(p) {
   if (el) el.style.width = p + '%';
 }
 
-async function avFetch(params, retries=3) {
-  const url = 'https://www.alphavantage.co/query?' + new URLSearchParams({ ...params, apikey: AV_KEY });
-  let lastErr = null;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20000); // 20s timeout
-      let r;
-      try {
-        r = await fetch(url, { signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!r.ok) throw new Error('HTTP_' + r.status);
-      const data = await r.json();
-      const msg = (data['Note'] || data['Information'] || '').toLowerCase();
-      if (msg.includes('call frequency') || msg.includes('per minute') || msg.includes('per day') || msg.includes('standard api')) {
-        if (attempt < retries - 1) {
-          setStatus('触发频率限制，15秒后自动重试 (' + (attempt+1) + '/' + retries + ')...', true);
-          await new Promise(res => setTimeout(res, 15000));
-          continue;
-        }
-        throw new Error('RATE_LIMIT');
-      }
-      return data;
-    } catch(e) {
-      lastErr = e;
-      if (e.message === 'RATE_LIMIT') throw e;
-      if (e.name === 'AbortError') {
-        if (attempt < retries - 1) { await new Promise(res => setTimeout(res, 2000)); continue; }
-        throw new Error('TIMEOUT');
-      }
-      if (e.message && e.message.startsWith('HTTP_')) {
-        throw new Error('服务器错误 ' + e.message.replace('HTTP_','') + '，请稍后重试');
-      }
-      // Network error (offline, DNS fail, CORS etc.)
-      if (attempt < retries - 1) {
-        await new Promise(res => setTimeout(res, 2000));
-      } else {
-        throw new Error('NETWORK');
-      }
-    }
-  }
-  throw lastErr || new Error('UNKNOWN');
-}
 
-function errMsg(e) {
-  if (!e) return '未知错误';
-  if (e.message === 'RATE_LIMIT') return '已达API频率上限，请等待1分钟后重试';
-  if (e.message === 'TIMEOUT')    return '请求超时（20秒），请检查网络连接后重试';
-  if (e.message === 'NETWORK')    return '网络连接失败，请检查手机/电脑网络是否正常';
-  if (e.message === 'Failed to fetch') return '无法连接服务器，请检查网络';
-  return '请求失败：' + e.message;
-}
 
 function updateClock() {
   const now = new Date();
@@ -523,131 +536,92 @@ async function fetchQuote() {
   currentSym = sym;
   document.getElementById('fetchBtn').disabled = true;
   document.getElementById('chartLbl').textContent = sym + ' — 日K线';
+  document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 加载报价...';
 
-  const showSpin = (n, total) => {
-    document.getElementById('chartStatus').innerHTML =
-      '<span class="spin"></span> 加载中 ' + n + '/' + total;
-  };
-
-  // ── helper: safe fetch, never throws, returns null on error ──────────────
-  const safe = async (params, step, total) => {
-    showSpin(step, total);
-    try { return await avFetch(params); }
-    catch(e) {
-      console.warn('avFetch failed:', params.function, e.message);
-      return null;
+  try {
+    // Yahoo Finance v8 quote endpoint
+    const quoteUrl = YF_PROXY+'/v8/finance/chart/'+sym+'?interval=1d&range=1d';
+    const data = await yfFetch(quoteUrl);
+    const res  = data?.chart?.result?.[0];
+    if (!res) {
+      document.getElementById('chartStatus').innerHTML = '股票代码 "'+sym+'" 不存在，请检查';
+      document.getElementById('fetchBtn').disabled = false; return;
     }
-  };
+    const meta = res.meta;
+    const price   = parseFloat((meta.regularMarketPrice||0).toFixed(2));
+    const prevClose = parseFloat((meta.chartPreviousClose||meta.previousClose||price).toFixed(2));
+    const chg     = parseFloat((price - prevClose).toFixed(2));
+    const chgPct  = prevClose ? parseFloat(((chg/prevClose)*100).toFixed(2)) : 0;
+    const open    = parseFloat((meta.regularMarketOpen||price).toFixed(2));
+    const vol     = meta.regularMarketVolume||0;
+    const hi52    = parseFloat((meta.fiftyTwoWeekHigh||0).toFixed(2));
+    const lo52    = parseFloat((meta.fiftyTwoWeekLow||0).toFixed(2));
 
-  // ── fetch all 5, each isolated — one failure won't kill others ───────────
-  const quoteData = await safe({ function:'GLOBAL_QUOTE', symbol:sym }, 1, 5);
-  const dailyData = await safe({ function:'TIME_SERIES_DAILY', symbol:sym, outputsize:'compact' }, 2, 5);
-  const rsiData   = await safe({ function:'RSI',   symbol:sym, interval:'daily', time_period:14, series_type:'close' }, 3, 5);
-  const macdData  = await safe({ function:'MACD',  symbol:sym, interval:'daily', series_type:'close' }, 4, 5);
-  const bbData    = await safe({ function:'BBANDS',symbol:sym, interval:'daily', time_period:20, series_type:'close' }, 5, 5);
+    document.getElementById('mPrice').textContent = '$'+price.toFixed(2);
+    const ce = document.getElementById('mChange');
+    ce.textContent = (chg>=0?'+':'')+chg.toFixed(2)+' ('+(chg>=0?'+':'')+chgPct.toFixed(2)+'%)';
+    ce.className = 'ms '+(chg>=0?'up':'dn');
+    document.getElementById('mOpen').textContent   = '$'+open.toFixed(2);
+    document.getElementById('mVol').textContent    = '成交量 '+(vol>=1e6?(vol/1e6).toFixed(2)+'M':(vol/1e3).toFixed(0)+'K');
+    document.getElementById('m52').textContent     = '$'+hi52.toFixed(0)+'/$'+lo52.toFixed(0);
+    document.getElementById('mStatus').textContent = sym;
 
-  // ── check if everything failed (network/key problem) ─────────────────────
-  const allNull = [quoteData, dailyData, rsiData, macdData, bbData].every(d => d === null);
-  if (allNull) {
-    document.getElementById('chartStatus').innerHTML =
-      '全部请求失败 — 请检查：1) 网络连接是否正常  2) API Key是否有效  3) 是否触发每日500次上限';
-    document.getElementById('fetchBtn').disabled = false;
-    return;
+    // Trigger candlestick chart (daily by default)
+    const dailyBtn = document.querySelector('[data-tf="daily"]');
+    if (dailyBtn) await switchTF(dailyBtn);
+
+    // Compute RSI/MACD/BB from daily candles (already loaded by switchTF)
+    // We'll update indicators after candles load via updateIndicatorsFromCandles()
+
+  } catch(e) {
+    document.getElementById('chartStatus').innerHTML = errMsg(e);
   }
-
-  // ── GLOBAL_QUOTE ──────────────────────────────────────────────────────────
-  let price = null, chg = 0, chgPct = 0;
-  if (quoteData) {
-    const q = quoteData['Global Quote'] || {};
-    price   = parseFloat(q['05. price']);
-    chg     = parseFloat(q['09. change']) || 0;
-    chgPct  = parseFloat(q['10. change percent']) || 0;
-    const open = parseFloat(q['02. open']) || 0;
-    const vol  = parseInt(q['06. volume']) || 0;
-    if (price && !isNaN(price)) {
-      document.getElementById('mPrice').textContent = '$' + price.toFixed(2);
-      const ce = document.getElementById('mChange');
-      ce.textContent = (chg>=0?'+':'') + chg.toFixed(2) + ' (' + (chg>=0?'+':'') + chgPct.toFixed(2) + '%)';
-      ce.className = 'ms ' + (chg >= 0 ? 'up' : 'dn');
-      document.getElementById('mOpen').textContent = '$' + open.toFixed(2);
-      document.getElementById('mVol').textContent = '成交量 ' + (vol>=1e6?(vol/1e6).toFixed(2)+'M':(vol/1e3).toFixed(0)+'K');
-      document.getElementById('m52').textContent = '$'+parseFloat(q['03. high']||0).toFixed(0)+'/$'+parseFloat(q['04. low']||0).toFixed(0);
-      document.getElementById('mStatus').textContent = sym;
-    } else {
-      // Invalid symbol
-      const note = (quoteData['Note']||quoteData['Information']||quoteData['Error Message']||'');
-      document.getElementById('chartStatus').innerHTML = note ? note.slice(0,80) : '股票代码 "'+sym+'" 不存在，请检查';
-      document.getElementById('fetchBtn').disabled = false;
-      return;
-    }
-  }
-
-  // ── TIME_SERIES_DAILY ─────────────────────────────────────────────────────
-  let ma20last = 0, ma50last = 0;
-  if (dailyData) {
-    const ts = dailyData['Time Series (Daily)'];
-    if (ts) {
-      const dates  = Object.keys(ts).slice(0, 60).reverse();
-      const closes = dates.map(d => parseFloat(ts[d]['4. close']));
-      const ma20   = closes.map((_, i) => i<19 ? null : parseFloat((closes.slice(i-19,i+1).reduce((a,b)=>a+b,0)/20).toFixed(2)));
-      const ma50   = closes.map((_, i) => i<49 ? null : parseFloat((closes.slice(i-49,i+1).reduce((a,b)=>a+b,0)/50).toFixed(2)));
-      ma20last = ma20.filter(v=>v!==null).slice(-1)[0] || 0;
-      ma50last = ma50.filter(v=>v!==null).slice(-1)[0] || 0;
-      document.getElementById('iMA20').textContent = '$' + ma20last.toFixed(2);
-      document.getElementById('iMA50').textContent = '$' + ma50last.toFixed(2);
-      // Trigger proper candlestick chart for daily view
-      const dailyBtn = document.querySelector('[data-tf="daily"]');
-      if (dailyBtn) switchTF(dailyBtn);
-    }
-  }
-
-  // ── RSI ───────────────────────────────────────────────────────────────────
-  let rsiVal = null;
-  if (rsiData) {
-    const rsiTs = rsiData['Technical Analysis: RSI'];
-    if (rsiTs && Object.keys(rsiTs).length > 0) {
-      rsiVal = parseFloat(Object.values(rsiTs)[0]['RSI']);
-      if (!isNaN(rsiVal)) {
-        const re = document.getElementById('iRSI');
-        re.textContent = rsiVal.toFixed(1);
-        re.className = rsiVal>70 ? 'dn' : rsiVal<30 ? 'up' : '';
-      }
-    }
-  }
-
-  // ── MACD ──────────────────────────────────────────────────────────────────
-  let macdVal = null, macdSig = null;
-  if (macdData) {
-    const macdTs = macdData['Technical Analysis: MACD'];
-    if (macdTs && Object.keys(macdTs).length > 0) {
-      const lv = Object.values(macdTs)[0];
-      macdVal = parseFloat(lv['MACD']);
-      macdSig = parseFloat(lv['MACD_Signal']);
-      if (!isNaN(macdVal)) {
-        const me = document.getElementById('iMACD');
-        me.textContent = (macdVal>=0?'+':'') + macdVal.toFixed(3);
-        me.className = macdVal>=0 ? 'up' : 'dn';
-      }
-    }
-  }
-
-  // ── BBANDS ────────────────────────────────────────────────────────────────
-  let bbu = null, bbl = null;
-  if (bbData) {
-    const bbTs = bbData['Technical Analysis: BBANDS'];
-    if (bbTs && Object.keys(bbTs).length > 0) {
-      const lv = Object.values(bbTs)[0];
-      bbu = parseFloat(lv['Real Upper Band']);
-      bbl = parseFloat(lv['Real Lower Band']);
-      if (!isNaN(bbu)) {
-        document.getElementById('iBBU').textContent = '$' + bbu.toFixed(2);
-        document.getElementById('iBBL').textContent = '$' + bbl.toFixed(2);
-      }
-    }
-  }
-
-  if (price) generateSignals(sym, price, rsiVal, macdVal, macdSig, bbu, bbl, ma20last, ma50last);
   document.getElementById('fetchBtn').disabled = false;
+}
+
+function updateIndicatorsFromCandles(candles) {
+  if (!candles || candles.length < 30) return;
+  const closes = candles.map(c=>c.c);
+
+  // MA20, MA50
+  const ma20arr = closes.map((_,i)=>i<19?null:parseFloat((closes.slice(i-19,i+1).reduce((a,b)=>a+b,0)/20).toFixed(2)));
+  const ma50arr = closes.map((_,i)=>i<49?null:parseFloat((closes.slice(i-49,i+1).reduce((a,b)=>a+b,0)/50).toFixed(2)));
+  const ma20last = ma20arr.filter(v=>v!==null).slice(-1)[0]||0;
+  const ma50last = ma50arr.filter(v=>v!==null).slice(-1)[0]||0;
+  document.getElementById('iMA20').textContent = '$'+ma20last.toFixed(2);
+  document.getElementById('iMA50').textContent = '$'+ma50last.toFixed(2);
+
+  // RSI
+  const rsiArr = computeRSI(closes);
+  const rsiVal = rsiArr.filter(v=>v!==null).slice(-1)[0];
+  if (rsiVal!=null) {
+    const re = document.getElementById('iRSI');
+    re.textContent = rsiVal.toFixed(1);
+    re.className = rsiVal>70?'dn':rsiVal<30?'up':'';
+  }
+
+  // MACD
+  const {macd,signal:macdSig} = computeMACD(closes);
+  const macdLast = macd.filter(v=>v!==null).slice(-1)[0];
+  const macdSigLast = macdSig.filter(v=>v!==null).slice(-1)[0];
+  if (macdLast!=null) {
+    const me = document.getElementById('iMACD');
+    me.textContent = (macdLast>=0?'+':'')+macdLast.toFixed(3);
+    me.className = macdLast>=0?'up':'dn';
+  }
+
+  // Bollinger Bands
+  const bbArr = computeBB(closes);
+  const bbLast = bbArr.slice(-1)[0];
+  if (bbLast && bbLast.u) {
+    document.getElementById('iBBU').textContent = '$'+bbLast.u.toFixed(2);
+    document.getElementById('iBBL').textContent = '$'+bbLast.l.toFixed(2);
+  }
+
+  // Price for signals
+  const price  = closes[closes.length-1];
+  const bbuVal = bbLast?.u||null, bblVal = bbLast?.l||null;
+  generateSignals(currentSym, price, rsiVal, macdLast, macdSigLast, bbuVal, bblVal, ma20last, ma50last);
 }
 
 function generateSignals(sym, price, rsi, macd, macdSig, bbu, bbl, ma20, ma50) {
@@ -960,35 +934,27 @@ function drawCandleChart(candles) {
 
 async function switchTF(btn) {
   if (!currentSym) return;
-  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tf-btn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
   currentTFBtn = btn;
 
-  const fn = btn.dataset.fn, iv = btn.dataset.iv, tf = btn.dataset.tf;
+  const tf = btn.dataset.tf;
+  const cfg = YF_TF[tf] || {interval:'1d', range:'6mo'};
   const tfLabels = {'1min':'1分钟','5min':'5分钟','15min':'15分钟','30min':'30分钟','60min':'1小时','daily':'日K线','weekly':'周K线','monthly':'月K线'};
-  document.getElementById('chartLbl').textContent = currentSym + ' — ' + (tfLabels[tf]||tf);
+  document.getElementById('chartLbl').textContent = currentSym+' — '+(tfLabels[tf]||tf);
   document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 加载中...';
 
   try {
-    const params = { function:fn, symbol:currentSym, outputsize: fn==='TIME_SERIES_INTRADAY' ? 'full' : 'compact' };
-    if (iv) params.interval = iv;
-    const data = await avFetch(params);
-
-    const tsKeyMap = { TIME_SERIES_INTRADAY:'Time Series ('+iv+')', TIME_SERIES_DAILY:'Time Series (Daily)', TIME_SERIES_WEEKLY:'Weekly Time Series', TIME_SERIES_MONTHLY:'Monthly Time Series' };
-    const ts = data[tsKeyMap[fn]];
-    if (!ts) { document.getElementById('chartStatus').innerHTML = '暂无数据'; return; }
-
-    const keys = Object.keys(ts).slice(0, fn==='TIME_SERIES_INTRADAY'?200:150).reverse();
-    const candles = keys.map(k => ({
-      t: fn==='TIME_SERIES_INTRADAY' ? k.slice(5,16) : k.slice(5),
-      o: parseFloat(ts[k]['1. open']),
-      h: parseFloat(ts[k]['2. high']),
-      l: parseFloat(ts[k]['3. low']),
-      c: parseFloat(ts[k]['4. close']),
-      v: parseInt(ts[k]['5. volume'])
-    }));
-
+    const url = YF_PROXY+'/v8/finance/chart/'+currentSym+'?interval='+cfg.interval+'&range='+cfg.range;
+    const data = await yfFetch(url);
+    const candles = parseYFChart(data);
+    if (!candles.length) {
+      document.getElementById('chartStatus').innerHTML = '暂无数据';
+      return;
+    }
     drawCandleChart(candles);
+    // Update indicators from daily candles only
+    if (tf === 'daily') updateIndicatorsFromCandles(candles);
   } catch(e) {
     document.getElementById('chartStatus').innerHTML = errMsg(e);
   }
@@ -1013,28 +979,30 @@ const positions = [
 ];
 
 async function fetchPositions() {
-  const pnlVals = [], lbls = [];
-  let totalMV = 0, totalPnL = 0;
+  const pnlVals=[], lbls=[];
+  let totalMV=0, totalPnL=0;
   for (const pos of positions) {
     try {
-      const d = await avFetch({ function: 'GLOBAL_QUOTE', symbol: pos.sym });
-      const q = d['Global Quote'];
-      if (!q || !q['05. price']) continue;
-      const price = parseFloat(q['05. price']);
-      const val = price * pos.qty, pnl = (price - pos.cost) * pos.qty, pct = (price - pos.cost) / pos.cost * 100;
-      const cls = pnl >= 0 ? 'up' : 'dn';
-      document.getElementById('pos_' + pos.sym).textContent = '$' + price.toFixed(2);
-      document.getElementById('posv_' + pos.sym).textContent = '$' + (val / 1000).toFixed(1) + 'K';
-      const pe = document.getElementById('posp_' + pos.sym); pe.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(0); pe.className = cls;
-      const pc = document.getElementById('pospc_' + pos.sym); pc.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%'; pc.className = cls;
+      const url = YF_PROXY+'/v8/finance/chart/'+pos.sym+'?interval=1d&range=1d';
+      const data = await yfFetch(url);
+      const meta = data?.chart?.result?.[0]?.meta;
+      if (!meta) continue;
+      const price = parseFloat((meta.regularMarketPrice||0).toFixed(2));
+      if (!price) continue;
+      const val=price*pos.qty, pnl=(price-pos.cost)*pos.qty, pct=(price-pos.cost)/pos.cost*100;
+      const cls=pnl>=0?'up':'dn';
+      document.getElementById('pos_'+pos.sym).textContent='$'+price.toFixed(2);
+      document.getElementById('posv_'+pos.sym).textContent='$'+(val/1000).toFixed(1)+'K';
+      const pe=document.getElementById('posp_'+pos.sym); pe.textContent=(pnl>=0?'+':'')+pnl.toFixed(0); pe.className=cls;
+      const pc=document.getElementById('pospc_'+pos.sym); pc.textContent=(pct>=0?'+':'')+pct.toFixed(1)+'%'; pc.className=cls;
       pnlVals.push(parseFloat(pnl.toFixed(0))); lbls.push(pos.sym);
-      totalMV += val; totalPnL += pnl;
-    } catch (e) { }
+      totalMV+=val; totalPnL+=pnl;
+    } catch(e) { console.warn('fetchPositions', pos.sym, e.message); }
   }
   if (pnlVals.length) {
-    document.getElementById('totalMV').textContent = '$' + (totalMV / 1000).toFixed(1) + 'K';
-    const pe = document.getElementById('totalPnL'); pe.textContent = (totalPnL >= 0 ? '+$' : '-$') + Math.abs(totalPnL).toFixed(0); pe.className = 'mv ' + (totalPnL >= 0 ? 'up' : 'dn');
-    document.getElementById('posRatio').textContent = ((totalMV / (totalMV + 26590)) * 100).toFixed(1) + '%';
+    document.getElementById('totalMV').textContent='$'+(totalMV/1000).toFixed(1)+'K';
+    const pe=document.getElementById('totalPnL'); pe.textContent=(totalPnL>=0?'+$':'-$')+Math.abs(totalPnL).toFixed(0); pe.className='mv '+(totalPnL>=0?'up':'dn');
+    document.getElementById('posRatio').textContent=((totalMV/(totalMV+26590))*100).toFixed(1)+'%';
     drawPnlChart(lbls, pnlVals);
   }
 }
@@ -1181,23 +1149,19 @@ async function runAll() {
 
   let closes = [], dates = [];
   try {
-    const data = await avFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'full' });
-    const ts = data['Time Series (Daily)'];
-    if (!ts) {
-      const note = data['Note'] || data['Information'] || '';
-      if (note.includes('call frequency') || note.includes('API call frequency')) {
-        setStatus('API频率限制：免费版每分钟25次，请等待1分钟后重试', false);
-        showRateLimitTip(60);
-      } else if (data['Error Message']) {
-        setStatus('股票代码 "' + sym + '" 不存在，请检查是否正确', false);
-      } else {
-        setStatus('数据获取失败，请稍后重试（免费API每天限500次）', false);
-      }
+    // Map periods (trading days) to Yahoo range parameter
+    const rangeMap = {252:'1y', 504:'2y', 756:'3y', 1260:'5y'};
+    const range = rangeMap[periods] || '2y';
+    const url = YF_PROXY+'/v8/finance/chart/'+sym+'?interval=1d&range='+range;
+    const data = await yfFetch(url);
+    const candles = parseYFChart(data);
+    if (!candles.length) {
+      setStatus('股票代码 "'+sym+'" 不存在或暂无数据，请检查', false);
       btn.disabled = false; return;
     }
-    dates = Object.keys(ts).slice(0, periods).reverse();
-    closes = dates.map(d => parseFloat(ts[d]['4. close']));
-  } catch (e) { setStatus(errMsg(e), false); btn.disabled = false; return; }
+    dates  = candles.map(c=>c.t);
+    closes = candles.map(c=>c.c);
+  } catch(e) { setStatus(errMsg(e), false); btn.disabled = false; return; }
 
   setProgress(35);
   const benchRet = (closes[closes.length - 1] - closes[0]) / closes[0] * 100;
