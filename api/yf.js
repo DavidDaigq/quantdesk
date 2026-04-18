@@ -1,39 +1,84 @@
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
+
   const sym = (req.query.symbol || '').toUpperCase().trim();
   const iv  = req.query.interval || '1d';
   const rng = req.query.range    || '6mo';
   if (!sym) return res.status(400).json({ error: 'symbol required' });
-  const KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
+
+  const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+
   try {
-    const now = Math.floor(Date.now() / 1000);
-    const rangeMap = {'1d':1,'5d':5,'1mo':30,'3mo':90,'6mo':180,'1y':365,'2y':730,'3y':1095,'5y':1825,'10y':3650};
-    const days = rangeMap[rng] || 180;
-    const from = now - days * 86400;
-    const ivMap = {'1m':'1','5m':'5','15m':'15','30m':'30','60m':'60','1d':'D','1wk':'W','1mo':'M'};
-    const resolution = ivMap[iv] || 'D';
-    const url = 'https://finnhub.io/api/v1/stock/candle?symbol='+sym+'&resolution='+resolution+'&from='+from+'&to='+now+'&token='+KEY;
-    const r = await fetch(url);
-    if (!r.ok) return res.status(r.status).json({ error: 'finnhub_'+r.status });
-    const data = await r.json();
-    if (data.s === 'no_data') return res.status(404).json({ error: 'no_data' });
-    if (data.s !== 'ok') return res.status(500).json({ error: data.s });
-    const last = data.c.length - 1;
-    const result = {
-      chart: { result: [{ meta: {
-        symbol: sym,
-        regularMarketPrice: data.c[last],
-        chartPreviousClose: data.c[last-1] || data.c[0],
-        regularMarketOpen: data.o[last],
-        regularMarketDayHigh: data.h[last],
-        regularMarketDayLow: data.l[last],
-        regularMarketVolume: data.v[last],
-        fiftyTwoWeekHigh: Math.max(...data.h),
-        fiftyTwoWeekLow: Math.min(...data.l),
-      }, timestamp: data.t, indicators: { quote: [{ open:data.o, high:data.h, low:data.l, close:data.c, volume:data.v }] } }], error: null }
+    const now = new Date();
+    const rangeMap = {
+      '1d':1,'5d':5,'1mo':30,'3mo':90,
+      '6mo':180,'1y':365,'2y':730,'3y':1095,'5y':1825
     };
+    const days = rangeMap[rng] || 180;
+    const from = new Date(now - days*86400000);
+    const toStr   = now.toISOString().slice(0,10);
+    const fromStr = from.toISOString().slice(0,10);
+
+    // Polygon multiplier + timespan mapping
+    const ivMap = {
+      '1m':  {mult:1,  span:'minute'},
+      '5m':  {mult:5,  span:'minute'},
+      '15m': {mult:15, span:'minute'},
+      '30m': {mult:30, span:'minute'},
+      '60m': {mult:1,  span:'hour'},
+      '1d':  {mult:1,  span:'day'},
+      '1wk': {mult:1,  span:'week'},
+      '1mo': {mult:1,  span:'month'},
+    };
+    const {mult, span} = ivMap[iv] || {mult:1, span:'day'};
+
+    const url = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/${mult}/${span}/${fromStr}/${toStr}`
+      + `?adjusted=true&sort=asc&limit=500&apiKey=${KEY}`;
+
+    const r = await fetch(url);
+    if (!r.ok) return res.status(r.status).json({ error: 'polygon_' + r.status });
+
+    const data = await r.json();
+    if (data.status === 'ERROR') return res.status(400).json({ error: data.error || 'polygon_error' });
+    if (!data.results || !data.results.length) return res.status(404).json({ error: 'no_data' });
+
+    const results = data.results;
+    const last = results[results.length - 1];
+    const prev = results[results.length - 2] || results[0];
+
+    // Convert to Yahoo Finance compatible format
+    const out = {
+      chart: {
+        result: [{
+          meta: {
+            symbol: sym,
+            regularMarketPrice:   last.c,
+            chartPreviousClose:   prev.c,
+            regularMarketOpen:    last.o,
+            regularMarketDayHigh: last.h,
+            regularMarketDayLow:  last.l,
+            regularMarketVolume:  last.v,
+            fiftyTwoWeekHigh: Math.max(...results.map(r=>r.h)),
+            fiftyTwoWeekLow:  Math.min(...results.map(r=>r.l)),
+          },
+          timestamp: results.map(r => Math.floor(r.t / 1000)),
+          indicators: {
+            quote: [{
+              open:   results.map(r => r.o),
+              high:   results.map(r => r.h),
+              low:    results.map(r => r.l),
+              close:  results.map(r => r.c),
+              volume: results.map(r => r.v),
+            }]
+          }
+        }],
+        error: null
+      }
+    };
+
     res.setHeader('Cache-Control', 's-maxage=60');
-    return res.status(200).json(result);
+    return res.status(200).json(out);
+
   } catch(e) {
     return res.status(500).json({ error: e.message });
   }
