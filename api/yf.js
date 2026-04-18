@@ -4,77 +4,78 @@ module.exports = async function handler(req, res) {
   const iv  = req.query.interval || '1d';
   const rng = req.query.range    || '1y';
   if (!sym) return res.status(400).json({ error: 'symbol required' });
-  const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+
+  const KEY = '5680395d04634b108543371adcc0d1f5';
+
   try {
-    const now = new Date();
+    // Map interval
+    const ivMap = {
+      '1m':'1min','5m':'5min','15m':'15min','30m':'30min',
+      '60m':'1h','1d':'1day','1wk':'1week','1mo':'1month'
+    };
+    const tdInterval = ivMap[iv] || '1day';
+
+    // Map range to outputsize
     const rangeMap = {
       '1d':1,'5d':5,'1mo':30,'3mo':90,'6mo':180,
       '1y':365,'2y':730,'3y':1095,'5y':1825,'10y':3650
     };
     const days = rangeMap[rng] || 365;
-    const from = new Date(now - days*86400000);
-    const toStr   = now.toISOString().slice(0,10);
-    const fromStr = from.toISOString().slice(0,10);
 
-    const ivMap = {
-      '1m':  {mult:1,  span:'minute'},
-      '5m':  {mult:5,  span:'minute'},
-      '15m': {mult:15, span:'minute'},
-      '30m': {mult:30, span:'minute'},
-      '60m': {mult:1,  span:'hour'},
-      '1d':  {mult:1,  span:'day'},
-      '1wk': {mult:1,  span:'week'},
-      '1mo': {mult:1,  span:'month'},
-    };
-    const {mult, span} = ivMap[iv] || {mult:1, span:'day'};
+    // For intraday use more bars
+    let outputsize;
+    if (tdInterval.includes('min') || tdInterval === '1h') {
+      outputsize = Math.min(days * 8, 5000);
+    } else {
+      outputsize = Math.min(days, 5000);
+    }
 
-    // Polygon free tier: minute data only available for last 2 years
-    // Use higher limit for intraday
-    const limit = (span === 'minute' || span === 'hour') ? 5000 : 2000;
-
-    const url = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/${mult}/${span}/${fromStr}/${toStr}`
-      + `?adjusted=true&sort=asc&limit=${limit}&apiKey=${KEY}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=${sym}&interval=${tdInterval}&outputsize=${outputsize}&apikey=${KEY}&format=JSON&order=ASC`;
 
     const r = await fetch(url);
-    if (!r.ok) return res.status(r.status).json({ error: 'polygon_' + r.status });
+    if (!r.ok) return res.status(r.status).json({ error: 'twelvedata_' + r.status });
+
     const data = await r.json();
-    if (data.status === 'ERROR') return res.status(400).json({ error: data.error || 'polygon_error' });
-    if (!data.results || !data.results.length) return res.status(404).json({ error: 'no_data' });
+    if (data.status === 'error') return res.status(400).json({ error: data.message || 'twelvedata_error' });
+    if (!data.values || !data.values.length) return res.status(404).json({ error: 'no_data' });
 
-    const results = data.results;
-    const last = results[results.length - 1];
-    const prev = results[results.length - 2] || results[0];
+    const values = data.values;
+    const last = values[values.length - 1];
+    const prev = values[values.length - 2] || values[0];
 
+    // Convert to Yahoo Finance compatible format
     const out = {
       chart: {
         result: [{
           meta: {
             symbol: sym,
-            regularMarketPrice:   parseFloat(last.c.toFixed(2)),
-            chartPreviousClose:   parseFloat(prev.c.toFixed(2)),
-            regularMarketOpen:    parseFloat(last.o.toFixed(2)),
-            regularMarketDayHigh: parseFloat(last.h.toFixed(2)),
-            regularMarketDayLow:  parseFloat(last.l.toFixed(2)),
-            regularMarketVolume:  last.v,
-            fiftyTwoWeekHigh: Math.max(...results.map(r=>r.h)),
-            fiftyTwoWeekLow:  Math.min(...results.map(r=>r.l)),
+            regularMarketPrice:   parseFloat(parseFloat(last.close).toFixed(2)),
+            chartPreviousClose:   parseFloat(parseFloat(prev.close).toFixed(2)),
+            regularMarketOpen:    parseFloat(parseFloat(last.open).toFixed(2)),
+            regularMarketDayHigh: parseFloat(parseFloat(last.high).toFixed(2)),
+            regularMarketDayLow:  parseFloat(parseFloat(last.low).toFixed(2)),
+            regularMarketVolume:  parseInt(last.volume || 0),
+            fiftyTwoWeekHigh: Math.max(...values.map(v => parseFloat(v.high))),
+            fiftyTwoWeekLow:  Math.min(...values.map(v => parseFloat(v.low))),
           },
-          timestamp: results.map(r => Math.floor(r.t / 1000)),
+          timestamp: values.map(v => Math.floor(new Date(v.datetime).getTime() / 1000)),
           indicators: {
             quote: [{
-              open:   results.map(r => r.o),
-              high:   results.map(r => r.h),
-              low:    results.map(r => r.l),
-              close:  results.map(r => r.c),
-              volume: results.map(r => r.v),
+              open:   values.map(v => parseFloat(v.open)),
+              high:   values.map(v => parseFloat(v.high)),
+              low:    values.map(v => parseFloat(v.low)),
+              close:  values.map(v => parseFloat(v.close)),
+              volume: values.map(v => parseInt(v.volume || 0)),
             }]
           }
         }],
         error: null
       }
     };
+
     res.setHeader('Cache-Control', 's-maxage=60');
     return res.status(200).json(out);
+
   } catch(e) {
     return res.status(500).json({ error: e.message });
   }
