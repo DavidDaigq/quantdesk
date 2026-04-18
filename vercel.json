@@ -1,6 +1,6 @@
 {
-  "rewrites": [
-    { "source": "/api/yf", "destination": "/api/yf" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
+  "version": 2,
+  "functions": {
+    "api/yf.js": { "runtime": "nodejs18.x" }
+  }
 }
