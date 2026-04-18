@@ -2,54 +2,32 @@ const KV_URL   = 'https://gorgeous-sunbird-101826.upstash.io';
 const KV_TOKEN = 'gQAAAAAAAAY3CAAIocDEyNzE5NDUyNzk3MjE0YWE3YWYyMmRiODkxZDAxMTllYnAxMTAxODI2';
 const KEY = 'quantdesk_watchlist';
 
-async function kvGet() {
-  const r = await fetch(`${KV_URL}/get/${KEY}`, {
-    headers: { Authorization: `Bearer ${KV_TOKEN}` }
-  });
-  const d = await r.json();
-  return d.result ? JSON.parse(d.result) : [];
-}
-
-async function kvSet(list) {
-  const encoded = encodeURIComponent(JSON.stringify(list));
-  const r = await fetch(`${KV_URL}/set/${KEY}/${encoded}`, {
-    headers: { Authorization: `Bearer ${KV_TOKEN}` }
-  });
-  return r.json();
-}
-
-function parseBody(req) {
-  return new Promise((resolve, reject) => {
-    if (req.body) { resolve(req.body); return; }
-    let data = '';
-    req.on('data', chunk => { data += chunk; });
-    req.on('end', () => {
-      try { resolve(JSON.parse(data)); }
-      catch(e) { resolve({}); }
-    });
-    req.on('error', reject);
-  });
-}
-
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  const { action, list } = req.query;
+
   try {
-    if (req.method === 'GET') {
-      const list = await kvGet();
-      return res.status(200).json({ list });
+    if (action === 'save' && list) {
+      // Save: GET /api/watchlist?action=save&list=AAPL,NVDA,TSLA
+      const arr = list.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+      const encoded = encodeURIComponent(JSON.stringify(arr));
+      const r = await fetch(`${KV_URL}/set/${KEY}/${encoded}`, {
+        headers: { Authorization: `Bearer ${KV_TOKEN}` }
+      });
+      const d = await r.json();
+      return res.status(200).json({ ok: true, saved: arr, result: d });
+    } else {
+      // Load: GET /api/watchlist
+      const r = await fetch(`${KV_URL}/get/${KEY}`, {
+        headers: { Authorization: `Bearer ${KV_TOKEN}` }
+      });
+      const d = await r.json();
+      const arr = d.result ? JSON.parse(d.result) : [];
+      return res.status(200).json({ list: arr });
     }
-    if (req.method === 'POST') {
-      const body = await parseBody(req);
-      const list = body.list;
-      if (!Array.isArray(list)) return res.status(400).json({ error: 'invalid list' });
-      const result = await kvSet(list);
-      return res.status(200).json({ ok: true, result });
-    }
-    return res.status(405).json({ error: 'method not allowed' });
   } catch(e) {
     return res.status(500).json({ error: e.message });
   }
