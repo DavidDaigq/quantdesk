@@ -155,6 +155,13 @@
     .progress-bar { height: 4px; background: var(--bg2); border-radius: 2px; overflow: hidden; margin: 6px 0; }
     .progress-fill { height: 100%; background: var(--blue); border-radius: 2px; transition: width 0.3s; }
     .gmma-info { background: var(--bg2); border-radius: var(--radius); padding: 9px 11px; font-size: 11px; line-height: 1.7; color: var(--text2); border-left: 2px solid var(--green); }
+    .tf-btn { padding: 4px 8px; border: 0.5px solid var(--border2); border-radius: var(--radius); font-size: 11px; cursor: pointer; background: var(--bg); color: var(--text2); transition: all 0.12s; }
+    .tf-btn:hover { background: var(--bg2); color: var(--text); }
+    .tf-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 500; }
+    .sf-btn { padding: 3px 8px; border: 0.5px solid var(--border2); border-radius: var(--radius); font-size: 11px; cursor: pointer; background: var(--bg); color: var(--text2); transition: all 0.12s; }
+    .sf-btn:hover { background: var(--bg2); }
+    .sf-btn.active { background: var(--bg2); font-weight: 500; opacity: 1; }
+    .sf-btn:not(.active) { opacity: 0.38; }
 
     /* Mobile responsive */
     @media (max-width: 640px) {
@@ -216,14 +223,40 @@
           <div class="mc"><div class="ml">信号数量</div><div class="mv" id="mSigs">0</div><div class="ms" id="mSigSub">待分析</div></div>
         </div>
         <div class="card">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <div class="ct" style="margin:0" id="chartLbl">— 日K线（近60天）</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+            <div class="ct" style="margin:0" id="chartLbl">— 日K线</div>
             <div class="status" id="chartStatus"></div>
           </div>
-          <div style="position:relative;height:200px"><canvas id="priceChart" role="img" aria-label="股价K线图">股价走势</canvas></div>
-          <div style="display:flex;gap:14px;margin-top:8px;font-size:11px;color:var(--text2)">
-            <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:2px;background:#378ADD;display:inline-block"></span>收盘价</span>
-            <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:2px;background:#EF9F27;display:inline-block"></span>MA20</span>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px" id="tfTabs">
+            <button class="tf-btn" data-tf="1min"  data-fn="TIME_SERIES_INTRADAY" data-iv="1min"  onclick="switchTF(this)">1分</button>
+            <button class="tf-btn" data-tf="5min"  data-fn="TIME_SERIES_INTRADAY" data-iv="5min"  onclick="switchTF(this)">5分</button>
+            <button class="tf-btn" data-tf="15min" data-fn="TIME_SERIES_INTRADAY" data-iv="15min" onclick="switchTF(this)">15分</button>
+            <button class="tf-btn" data-tf="30min" data-fn="TIME_SERIES_INTRADAY" data-iv="30min" onclick="switchTF(this)">30分</button>
+            <button class="tf-btn" data-tf="60min" data-fn="TIME_SERIES_INTRADAY" data-iv="60min" onclick="switchTF(this)">1时</button>
+            <button class="tf-btn active" data-tf="daily"  data-fn="TIME_SERIES_DAILY"   data-iv=""      onclick="switchTF(this)">日K</button>
+            <button class="tf-btn" data-tf="weekly" data-fn="TIME_SERIES_WEEKLY"  data-iv=""      onclick="switchTF(this)">周K</button>
+            <button class="tf-btn" data-tf="monthly" data-fn="TIME_SERIES_MONTHLY" data-iv=""     onclick="switchTF(this)">月K</button>
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+            <span style="font-size:11px;color:var(--text2);margin-right:2px">信号：</span>
+            <button class="sf-btn active" data-s="ALL"   onclick="toggleSig(this)">全部</button>
+            <button class="sf-btn active" data-s="GMMA"  onclick="toggleSig(this)" style="color:#0F6E56;border-color:#1D9E75">顾比</button>
+            <button class="sf-btn active" data-s="MA"    onclick="toggleSig(this)" style="color:#185FA5;border-color:#378ADD">双均线</button>
+            <button class="sf-btn active" data-s="RSI"   onclick="toggleSig(this)" style="color:#993C1D;border-color:#D85A30">RSI</button>
+            <button class="sf-btn active" data-s="MACD"  onclick="toggleSig(this)" style="color:#534AB7;border-color:#7F77DD">MACD</button>
+            <button class="sf-btn active" data-s="BB"    onclick="toggleSig(this)" style="color:#854F0B;border-color:#BA7517">布林带</button>
+            <button class="sf-btn active" data-s="VOL"   onclick="toggleSig(this)" style="color:#4B1528;border-color:#D4537E">巨量</button>
+          </div>
+          <div style="position:relative;height:260px"><canvas id="priceChart" role="img" aria-label="K线图含买卖信号">K线图</canvas></div>
+          <div style="position:relative;height:55px;margin-top:3px"><canvas id="volChart" role="img" aria-label="成交量">成交量</canvas></div>
+          <div style="display:flex;gap:10px;margin-top:6px;font-size:11px;color:var(--text2);flex-wrap:wrap">
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:10px;background:#3B6D11;display:inline-block;border-radius:2px"></span>阳线</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:10px;background:#A32D2D;display:inline-block;border-radius:2px"></span>阴线</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:2px;background:#EF9F27;display:inline-block"></span>MA20</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:2px;background:#7F77DD;display:inline-block"></span>MA50</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="font-size:13px;line-height:1;color:#27500A">▲</span>买入</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="font-size:13px;line-height:1;color:#791F1F">▼</span>卖出</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="font-size:13px;line-height:1">◆</span>巨量资金</span>
           </div>
         </div>
         <div class="two">
@@ -329,6 +362,10 @@
             <div class="status" id="statusEl"></div>
           </div>
           <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+          <div id="rateTip" style="display:none;margin-top:6px;padding:8px 10px;background:#FAEEDA;border-radius:8px;font-size:11px;color:#633806;line-height:1.6">
+            <b>免费API限制说明：</b>每分钟最多25次请求，每天500次。<br>
+            若提示频率限制，请等待 <b id="countdown">60</b> 秒后重试。回测只消耗1次请求。
+          </div>
         </div>
 
         <div id="resultsSection" style="display:none;flex-direction:column;gap:12px">
@@ -414,10 +451,28 @@ function setProgress(p) {
   if (el) el.style.width = p + '%';
 }
 
-async function avFetch(params) {
+async function avFetch(params, retries=3) {
   const url = 'https://www.alphavantage.co/query?' + new URLSearchParams({ ...params, apikey: AV_KEY });
-  const r = await fetch(url);
-  return r.json();
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const r = await fetch(url);
+      const data = await r.json();
+      const msg = data['Note'] || data['Information'] || '';
+      if (msg.includes('call frequency') || msg.includes('API call frequency') || msg.includes('premium')) {
+        if (attempt < retries - 1) {
+          setStatus('API请求频率限制，等待15秒后自动重试 (' + (attempt+1) + '/' + retries + ')...', true);
+          await new Promise(res => setTimeout(res, 15000));
+          continue;
+        }
+        throw new Error('RATE_LIMIT');
+      }
+      return data;
+    } catch(e) {
+      if (e.message === 'RATE_LIMIT') throw e;
+      if (attempt < retries - 1) await new Promise(res => setTimeout(res, 3000));
+      else throw e;
+    }
+  }
 }
 
 function updateClock() {
@@ -439,16 +494,27 @@ async function fetchQuote() {
   document.getElementById('chartLbl').textContent = sym + ' — 日K线（近60天）';
 
   try {
-    const [quoteData, dailyData, rsiData, macdData, bbData] = await Promise.all([
-      avFetch({ function: 'GLOBAL_QUOTE', symbol: sym }),
-      avFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'compact' }),
-      avFetch({ function: 'RSI', symbol: sym, interval: 'daily', time_period: 14, series_type: 'close' }),
-      avFetch({ function: 'MACD', symbol: sym, interval: 'daily', series_type: 'close' }),
-      avFetch({ function: 'BBANDS', symbol: sym, interval: 'daily', time_period: 20, series_type: 'close' })
-    ]);
+    document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 1/5';
+    const quoteData = await avFetch({ function: 'GLOBAL_QUOTE', symbol: sym });
+    document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 2/5';
+    const dailyData = await avFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'compact' });
+    document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 3/5';
+    const rsiData = await avFetch({ function: 'RSI', symbol: sym, interval: 'daily', time_period: 14, series_type: 'close' });
+    document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 4/5';
+    const macdData = await avFetch({ function: 'MACD', symbol: sym, interval: 'daily', series_type: 'close' });
+    document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 5/5';
+    const bbData = await avFetch({ function: 'BBANDS', symbol: sym, interval: 'daily', time_period: 20, series_type: 'close' });
 
     const q = quoteData['Global Quote'];
-    if (!q || !q['05. price']) { document.getElementById('chartStatus').innerHTML = '未找到'; document.getElementById('fetchBtn').disabled = false; return; }
+    if (!q || !q['05. price']) {
+      const note = quoteData['Note'] || quoteData['Information'] || '';
+      if (note.includes('call frequency') || note.includes('API call frequency')) {
+        document.getElementById('chartStatus').innerHTML = '频率限制，请等1分钟';
+      } else {
+        document.getElementById('chartStatus').innerHTML = '代码不存在或数据暂无';
+      }
+      document.getElementById('fetchBtn').disabled = false; return;
+    }
 
     const price = parseFloat(q['05. price']);
     const chg = parseFloat(q['09. change']);
@@ -550,18 +616,321 @@ function generateSignals(sym, price, rsi, macd, macdSig, bbu, bbl, ma20, ma50) {
   }
 }
 
-function drawPriceChart(labels, prices, ma20) {
+let volChartInst = null;
+let currentSym = 'AAPL';
+let currentTFBtn = null;
+let currentCandles = [];
+let activeSigStrats = new Set(['ALL','GMMA','MA','RSI','MACD','BB','VOL']);
+const VOL_MULT = 3.0;  // trigger: volume > VOL_MULT × MA20-vol
+
+// ── Signal computation on OHLCV candles ──────────────────────────────────────
+function computeSignals(candles) {
+  const closes = candles.map(c => c.c);
+  const highs  = candles.map(c => c.h);
+  const lows   = candles.map(c => c.l);
+  const n = closes.length;
+
+  const rsiArr  = computeRSI(closes);
+  const {macd, signal: macdSig} = computeMACD(closes);
+  const bbArr   = computeBB(closes);
+
+  const signals = []; // {idx, type:'BUY'|'SELL', strat, price}
+
+  for (let i = 1; i < n; i++) {
+    // ── MA strategy ──
+    const m10  = sma(closes,10,i),   m30  = sma(closes,30,i);
+    const m10p = sma(closes,10,i-1), m30p = sma(closes,30,i-1);
+    if (m10&&m30&&m10p&&m30p) {
+      if (m10>m30 && m10p<=m30p) signals.push({idx:i, type:'BUY',  strat:'MA',   price:lows[i]});
+      if (m10<m30 && m10p>=m30p) signals.push({idx:i, type:'SELL', strat:'MA',   price:highs[i]});
+    }
+
+    // ── RSI strategy ──
+    if (rsiArr[i]!=null && rsiArr[i-1]!=null) {
+      if (rsiArr[i-1]<30 && rsiArr[i]>=30) signals.push({idx:i, type:'BUY',  strat:'RSI',  price:lows[i]});
+      if (rsiArr[i-1]>70 && rsiArr[i]<=70) signals.push({idx:i, type:'SELL', strat:'RSI',  price:highs[i]});
+    }
+
+    // ── MACD strategy ──
+    if (macd[i]!=null && macdSig[i]!=null && macd[i-1]!=null && macdSig[i-1]!=null) {
+      if (macd[i]>macdSig[i] && macd[i-1]<=macdSig[i-1]) signals.push({idx:i, type:'BUY',  strat:'MACD', price:lows[i]});
+      if (macd[i]<macdSig[i] && macd[i-1]>=macdSig[i-1]) signals.push({idx:i, type:'SELL', strat:'MACD', price:highs[i]});
+    }
+
+    // ── BB strategy ──
+    if (bbArr[i].l && bbArr[i-1].l) {
+      if (closes[i-1]<=bbArr[i-1].l && closes[i]>bbArr[i].l) signals.push({idx:i, type:'BUY',  strat:'BB',   price:lows[i]});
+      if (closes[i-1]>=bbArr[i-1].u && closes[i]<bbArr[i].u) signals.push({idx:i, type:'SELL', strat:'BB',   price:highs[i]});
+    }
+
+    // ── GMMA strategy ──
+    const g  = gmmaGroups(closes,i), gp = gmmaGroups(closes,i-1);
+    if (g&&gp) {
+      if (g.sMin>g.lMax && g.sWidth>gp.sWidth && (gp.sMax<gp.lMin||gp.sMin<gp.lMax))
+        signals.push({idx:i, type:'BUY',  strat:'GMMA', price:lows[i]});
+      if (g.sMax<g.lMin && g.sWidth>gp.sWidth)
+        signals.push({idx:i, type:'SELL', strat:'GMMA', price:highs[i]});
+    }
+  }
+  return signals;
+}
+
+// ── Strategy colors & offsets so overlapping markers don't pile up ────────────
+const SIG_COLORS = { GMMA:'#1D9E75', MA:'#378ADD', RSI:'#D85A30', MACD:'#7F77DD', BB:'#BA7517' };
+const SIG_LABELS = { GMMA:'顾比', MA:'双均线', RSI:'RSI', MACD:'MACD', BB:'布林带' };
+
+// ── Big-volume signal computation ────────────────────────────────────────────
+function computeVolSignals(candles) {
+  const vols = candles.map(c => c.v);
+  const result = [];
+  for (let i = 20; i < candles.length; i++) {
+    const avg20 = vols.slice(i-20, i).reduce((a,b)=>a+b,0) / 20;
+    if (avg20 > 0 && vols[i] >= avg20 * VOL_MULT) {
+      const ratio = (vols[i] / avg20).toFixed(1);
+      result.push({ idx: i, vol: vols[i], avg: avg20, ratio, candle: candles[i] });
+    }
+  }
+  return result;
+}
+
+function buildVolDataset(candles, volSignals) {
+  if (!activeSigStrats.has('VOL') && !activeSigStrats.has('ALL')) return [];
+  const pts = new Array(candles.length).fill(null);
+  volSignals.forEach(s => {
+    // Place diamond marker at the midpoint of the candle body
+    pts[s.idx] = (s.candle.h + s.candle.l) / 2;
+  });
+  return [{
+    label: 'vol_big',
+    data: pts,
+    type: 'scatter',
+    pointStyle: 'rectRot',   // diamond shape
+    pointRadius: 8,
+    pointHoverRadius: 11,
+    backgroundColor: candles.map((c, i) => {
+      const s = volSignals.find(v => v.idx === i);
+      if (!s) return 'transparent';
+      return c.c >= c.o ? 'rgba(212,83,126,0.85)' : 'rgba(212,83,126,0.85)';
+    }),
+    borderColor: '#fff',
+    borderWidth: 1.5,
+    showLine: false,
+    order: -2,
+    _volSignals: volSignals
+  }];
+}
+
+function buildSignalDatasets(candles, signals) {
+  const stratOrder = ['GMMA','MA','RSI','MACD','BB'];
+  const datasets = [];
+
+  stratOrder.forEach((strat, si) => {
+    const filtered = signals.filter(s => s.strat === strat &&
+      (activeSigStrats.has('ALL') || activeSigStrats.has(strat)));
+
+    const buyPts  = new Array(candles.length).fill(null);
+    const sellPts = new Array(candles.length).fill(null);
+    const offset  = (si - 2) * 0.6; // vertical offset per strategy to reduce clutter
+
+    filtered.forEach(s => {
+      const range = candles[s.idx].h - candles[s.idx].l;
+      if (s.type === 'BUY')  buyPts[s.idx]  = candles[s.idx].l  - range * (0.04 + si * 0.025);
+      if (s.type === 'SELL') sellPts[s.idx] = candles[s.idx].h  + range * (0.04 + si * 0.025);
+    });
+
+    // Buy markers — filled upward triangles
+    datasets.push({
+      label: SIG_LABELS[strat] + '_buy',
+      data: buyPts,
+      type: 'scatter',
+      pointStyle: 'triangle',
+      rotation: 0,
+      pointRadius: 7,
+      pointHoverRadius: 9,
+      backgroundColor: SIG_COLORS[strat],
+      borderColor: '#fff',
+      borderWidth: 1,
+      showLine: false,
+      order: -1,
+      _strat: strat,
+      _type: 'BUY'
+    });
+
+    // Sell markers — downward triangles (rotation 180)
+    datasets.push({
+      label: SIG_LABELS[strat] + '_sell',
+      data: sellPts,
+      type: 'scatter',
+      pointStyle: 'triangle',
+      rotation: 180,
+      pointRadius: 7,
+      pointHoverRadius: 9,
+      backgroundColor: SIG_COLORS[strat],
+      borderColor: '#fff',
+      borderWidth: 1,
+      showLine: false,
+      order: -1,
+      _strat: strat,
+      _type: 'SELL'
+    });
+  });
+  return datasets;
+}
+
+function toggleSig(btn) {
+  const s = btn.dataset.s;
+  if (s === 'ALL') {
+    const allOn = [...document.querySelectorAll('.sf-btn[data-s]')]
+      .filter(b => b.dataset.s !== 'ALL').every(b => b.classList.contains('active'));
+    if (allOn) {
+      document.querySelectorAll('.sf-btn').forEach(b => b.classList.remove('active'));
+      activeSigStrats.clear();
+    } else {
+      document.querySelectorAll('.sf-btn').forEach(b => b.classList.add('active'));
+      activeSigStrats = new Set(['ALL','GMMA','MA','RSI','MACD','BB','VOL']);
+    }
+  } else {
+    btn.classList.toggle('active');
+    if (btn.classList.contains('active')) activeSigStrats.add(s);
+    else activeSigStrats.delete(s);
+    const anyOn = ['GMMA','MA','RSI','MACD','BB','VOL'].some(k => activeSigStrats.has(k));
+    const allBtn = document.querySelector('.sf-btn[data-s="ALL"]');
+    if (anyOn) allBtn.classList.add('active'); else allBtn.classList.remove('active');
+  }
+  if (currentCandles.length) drawCandleChart(currentCandles);
+}
+
+// ── Main chart renderer ───────────────────────────────────────────────────────
+function drawCandleChart(candles) {
+  currentCandles = candles;
   const ctx = document.getElementById('priceChart').getContext('2d');
   if (priceChartInst) priceChartInst.destroy();
+
+  const closes = candles.map(c => c.c);
+  const ma20 = closes.map((_, i) => i<19 ? null : parseFloat((closes.slice(i-19,i+1).reduce((a,b)=>a+b,0)/20).toFixed(3)));
+  const ma50 = closes.map((_, i) => i<49 ? null : parseFloat((closes.slice(i-49,i+1).reduce((a,b)=>a+b,0)/50).toFixed(3)));
+  const upColor = candles.map(c => c.c >= c.o ? '#3B6D11' : '#A32D2D');
+
+  const signals = computeSignals(candles);
+  const sigDatasets = buildSignalDatasets(candles, signals);
+  const volSignals = computeVolSignals(candles);
+  const volDatasets = buildVolDataset(candles, volSignals);
+
   priceChartInst = new Chart(ctx, {
-    type: 'line',
-    data: { labels, datasets: [
-      { label: '收盘价', data: prices, borderColor: '#378ADD', borderWidth: 1.5, pointRadius: 0, tension: 0.2, fill: false },
-      { label: 'MA20', data: ma20, borderColor: '#EF9F27', borderWidth: 1, borderDash: [4, 3], pointRadius: 0, tension: 0.2, fill: false }
-    ]},
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } }, y: { ticks: { font: { size: 10 }, callback: v => '$' + v.toFixed(0) } } } }
+    type: 'bar',
+    data: {
+      labels: candles.map(c => c.t),
+      datasets: [
+        { label:'wick',  data: candles.map(c=>[c.l,c.h]),              backgroundColor:upColor, borderWidth:0, barPercentage:0.15, categoryPercentage:1.0, order:3 },
+        { label:'body',  data: candles.map(c=>[Math.min(c.o,c.c),Math.max(c.o,c.c)]), backgroundColor:upColor, borderWidth:0, barPercentage:0.6, categoryPercentage:0.9, order:2 },
+        { label:'MA20', data:ma20, type:'line', borderColor:'#EF9F27', borderWidth:1.2, borderDash:[4,3], pointRadius:0, fill:false, order:1 },
+        { label:'MA50', data:ma50, type:'line', borderColor:'#7F77DD', borderWidth:1.2, borderDash:[6,3], pointRadius:0, fill:false, order:1 },
+        ...sigDatasets,
+        ...volDatasets
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins: {
+        legend: { display:false },
+        tooltip: {
+          callbacks: {
+            label(ctx2) {
+              const i = ctx2.dataIndex;
+              const c = candles[i];
+              if (!c) return '';
+              const lbl = ctx2.dataset.label || '';
+              if (lbl === 'body')  return ['开: $'+c.o.toFixed(2),'收: $'+c.c.toFixed(2),'涨跌: '+(c.c>=c.o?'+':'')+(((c.c-c.o)/c.o)*100).toFixed(2)+'%'];
+              if (lbl === 'wick')  return ['最高: $'+c.h.toFixed(2),'最低: $'+c.l.toFixed(2)];
+              if (lbl.includes('_buy'))  return [SIG_LABELS[ctx2.dataset._strat]+' 买入信号','价格: $'+c.c.toFixed(2),'时间: '+c.t];
+              if (lbl.includes('_sell')) return [SIG_LABELS[ctx2.dataset._strat]+' 卖出信号','价格: $'+c.c.toFixed(2),'时间: '+c.t];
+              if (lbl === 'vol_big') {
+                const vs = (ctx2.dataset._volSignals||[]).find(v=>v.idx===i);
+                const volStr = c.v>=1e6?(c.v/1e6).toFixed(2)+'M':(c.v/1e3).toFixed(0)+'K';
+                const ratio = vs ? vs.ratio : '—';
+                return ['巨额资金异动', '成交量: '+volStr, '均量倍数: '+ratio+'×', '时间: '+c.t];
+              }
+              if (ctx2.raw !== null && typeof ctx2.raw === 'number') return lbl+': $'+ctx2.raw.toFixed(2);
+              return '';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks:{ maxTicksLimit:8, font:{size:10} }, grid:{display:false} },
+        y: { position:'right', ticks:{ font:{size:10}, callback: v=>'$'+v.toFixed(0) }, grid:{color:'rgba(128,128,128,0.08)'} }
+      }
+    }
   });
+
+  // Volume chart
+  const vctx = document.getElementById('volChart').getContext('2d');
+  if (volChartInst) volChartInst.destroy();
+  volChartInst = new Chart(vctx, {
+    type:'bar',
+    data:{ labels: candles.map(c=>c.t), datasets:[{ data:candles.map(c=>c.v), backgroundColor:candles.map((c,i)=>{
+      const isVol = volSignals.some(v=>v.idx===i);
+      if (isVol) return 'rgba(212,83,126,0.85)';
+      return c.c>=c.o?'rgba(59,109,17,0.5)':'rgba(163,45,45,0.5)';
+    }), borderWidth:0, barPercentage:0.8, categoryPercentage:0.9 }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}, tooltip:{callbacks:{label:ctx3=>{const v=ctx3.raw; return v>=1e6?(v/1e6).toFixed(2)+'M':(v/1e3).toFixed(0)+'K';}}}}, scales:{ x:{display:false}, y:{position:'right', ticks:{font:{size:9}, maxTicksLimit:3, callback:v=>v>=1e6?(v/1e6).toFixed(1)+'M':(v/1e3).toFixed(0)+'K'}, grid:{display:false}} } }
+  });
+
+  // Update signal summary below chart
+  const showVol = activeSigStrats.has('VOL') || activeSigStrats.has('ALL');
+  const buys  = signals.filter(s => activeSigStrats.has(s.strat)||activeSigStrats.has('ALL')).filter(s=>s.type==='BUY').length;
+  const sells = signals.filter(s => activeSigStrats.has(s.strat)||activeSigStrats.has('ALL')).filter(s=>s.type==='SELL').length;
+  const volCnt = showVol ? volSignals.length : 0;
+  document.getElementById('chartStatus').innerHTML =
+    candles.length + '根K线 · <span style="color:#3B6D11">▲' + buys + '买</span> <span style="color:#A32D2D">▼' + sells + '卖</span>'
+    + (showVol && volCnt > 0 ? ' <span style="color:#D4537E">◆' + volCnt + '巨量</span>' : '');
+}
+
+async function switchTF(btn) {
+  if (!currentSym) return;
+  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentTFBtn = btn;
+
+  const fn = btn.dataset.fn, iv = btn.dataset.iv, tf = btn.dataset.tf;
+  const tfLabels = {'1min':'1分钟','5min':'5分钟','15min':'15分钟','30min':'30分钟','60min':'1小时','daily':'日K线','weekly':'周K线','monthly':'月K线'};
+  document.getElementById('chartLbl').textContent = currentSym + ' — ' + (tfLabels[tf]||tf);
+  document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 加载中...';
+
+  try {
+    const params = { function:fn, symbol:currentSym, outputsize: fn==='TIME_SERIES_INTRADAY' ? 'full' : 'compact' };
+    if (iv) params.interval = iv;
+    const data = await avFetch(params);
+
+    const tsKeyMap = { TIME_SERIES_INTRADAY:'Time Series ('+iv+')', TIME_SERIES_DAILY:'Time Series (Daily)', TIME_SERIES_WEEKLY:'Weekly Time Series', TIME_SERIES_MONTHLY:'Monthly Time Series' };
+    const ts = data[tsKeyMap[fn]];
+    if (!ts) { document.getElementById('chartStatus').innerHTML = '暂无数据'; return; }
+
+    const keys = Object.keys(ts).slice(0, fn==='TIME_SERIES_INTRADAY'?200:150).reverse();
+    const candles = keys.map(k => ({
+      t: fn==='TIME_SERIES_INTRADAY' ? k.slice(5,16) : k.slice(5),
+      o: parseFloat(ts[k]['1. open']),
+      h: parseFloat(ts[k]['2. high']),
+      l: parseFloat(ts[k]['3. low']),
+      c: parseFloat(ts[k]['4. close']),
+      v: parseInt(ts[k]['5. volume'])
+    }));
+
+    drawCandleChart(candles);
+  } catch(e) {
+    document.getElementById('chartStatus').innerHTML = e.message==='RATE_LIMIT' ? '频率限制，请稍候重试' : '加载失败，请重试';
+  }
+}
+
+function drawPriceChart(labels, prices, ma20) {
+  // Legacy line chart used on initial quote load (daily closes)
+  // Convert to candle format with just close prices (o=c for simplicity)
+  const candles = labels.map((t, i) => ({ t, o: prices[i], h: prices[i], l: prices[i], c: prices[i], v: 0 }));
+  // Re-fetch proper daily OHLCV data for the default daily view instead
+  if (currentSym) {
+    const dailyBtn = document.querySelector('[data-tf="daily"]');
+    if (dailyBtn) switchTF(dailyBtn);
+  }
 }
 
 const positions = [
@@ -709,6 +1078,22 @@ function runStrategy(name, closes, posSize, costPct, slipPct) {
 
 function score(r) { return r.winRate * 0.5 + r.rrRatio * 30 + r.totalRet * 0.2 - r.maxDD * 0.1; }
 
+let countdownTimer = null;
+function showRateLimitTip(seconds) {
+  const tip = document.getElementById('rateTip');
+  const cd = document.getElementById('countdown');
+  if (!tip) return;
+  tip.style.display = 'block';
+  let s = seconds;
+  cd.textContent = s;
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(() => {
+    s--;
+    if (cd) cd.textContent = Math.max(0, s);
+    if (s <= 0) { clearInterval(countdownTimer); if (tip) tip.style.display = 'none'; }
+  }, 1000);
+}
+
 async function runAll() {
   const sym = document.getElementById('sym').value.trim().toUpperCase() || 'AAPL';
   const posSize = parseFloat(document.getElementById('posSize').value) || 100;
@@ -726,7 +1111,18 @@ async function runAll() {
   try {
     const data = await avFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'full' });
     const ts = data['Time Series (Daily)'];
-    if (!ts) { setStatus('未找到股票代码', false); btn.disabled = false; return; }
+    if (!ts) {
+      const note = data['Note'] || data['Information'] || '';
+      if (note.includes('call frequency') || note.includes('API call frequency')) {
+        setStatus('API频率限制：免费版每分钟25次，请等待1分钟后重试', false);
+        showRateLimitTip(60);
+      } else if (data['Error Message']) {
+        setStatus('股票代码 "' + sym + '" 不存在，请检查是否正确', false);
+      } else {
+        setStatus('数据获取失败，请稍后重试（免费API每天限500次）', false);
+      }
+      btn.disabled = false; return;
+    }
     dates = Object.keys(ts).slice(0, periods).reverse();
     closes = dates.map(d => parseFloat(ts[d]['4. close']));
   } catch (e) { setStatus('网络错误，请重试', false); btn.disabled = false; return; }
