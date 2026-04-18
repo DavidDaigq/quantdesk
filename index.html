@@ -424,28 +424,28 @@
 </div>
 
 <script>
-// ── Yahoo Finance via allorigins proxy (no API key, no rate limit) ────────────
-const YF_PROXY = 'https://query1.finance.yahoo.com';
-
 let priceChartInst = null, pnlChartInst = null, eqInst = null, radarInst = null;
 
-// Fetch with timeout + retry
-async function yfFetch(url, retries=2) {
+// ── Data fetcher — calls our own Vercel /api/yf proxy (no CORS, no limits) ──
+async function yfFetch(symbol, interval, range, retries=3) {
   let lastErr;
   for (let i=0; i<retries; i++) {
     try {
       const ctrl = new AbortController();
-      const t = setTimeout(()=>ctrl.abort(), 15000);
-      const proxyUrl = 'https://allorigins.win/get?disableCache=true&url=' + encodeURIComponent(url);
+      const t = setTimeout(()=>ctrl.abort(), 20000);
+      const url = '/api/yf?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&range='+range;
       let r;
-      try { r = await fetch(proxyUrl, {signal:ctrl.signal}); }
+      try { r = await fetch(url, {signal:ctrl.signal}); }
       finally { clearTimeout(t); }
-      if (!r.ok) throw new Error('HTTP_'+r.status);
-      const wrapper = await r.json();
-      return JSON.parse(wrapper.contents);
+      if (!r.ok) {
+        const txt = await r.text().catch(()=>'');
+        throw new Error('HTTP_'+r.status+(txt?' '+txt.slice(0,80):''));
+      }
+      return await r.json();
     } catch(e) {
       lastErr = e;
-      if (i < retries-1) await new Promise(res=>setTimeout(res,1500));
+      if (e.name==='AbortError') { lastErr=new Error('TIMEOUT'); }
+      if (i < retries-1) await new Promise(res=>setTimeout(res, 1500*(i+1)));
     }
   }
   throw lastErr;
@@ -453,10 +453,12 @@ async function yfFetch(url, retries=2) {
 
 function errMsg(e) {
   if (!e) return '未知错误';
-  if (e.name==='AbortError' || e.message==='TIMEOUT') return '请求超时，请检查网络后重试';
-  if (e.message && e.message.includes('HTTP_')) return '服务器错误，请稍后重试';
-  if (e.message==='Failed to fetch' || e.message==='NETWORK') return '网络连接失败，请检查网络是否正常';
-  return '数据获取失败：' + (e.message||'未知');
+  if (!e.message) return '数据获取失败，请稍后重试';
+  if (e.message==='TIMEOUT')           return '请求超时，请检查网络后重试';
+  if (e.message.includes('HTTP_404'))  return '股票代码不存在，请检查';
+  if (e.message.includes('HTTP_'))     return '服务器错误，请稍后重试';
+  if (e.message==='Failed to fetch')   return '网络连接失败，请检查网络';
+  return '加载失败：'+e.message.slice(0,60);
 }
 
 // ── Yahoo Finance interval mapping ───────────────────────────────────────────
@@ -540,8 +542,7 @@ async function fetchQuote() {
 
   try {
     // Yahoo Finance v8 quote endpoint
-    const quoteUrl = YF_PROXY+'/v8/finance/chart/'+sym+'?interval=1d&range=1d';
-    const data = await yfFetch(quoteUrl);
+    const data = await yfFetch(sym, '1d', '1d');
     const res  = data?.chart?.result?.[0];
     if (!res) {
       document.getElementById('chartStatus').innerHTML = '股票代码 "'+sym+'" 不存在，请检查';
@@ -945,8 +946,7 @@ async function switchTF(btn) {
   document.getElementById('chartStatus').innerHTML = '<span class="spin"></span> 加载中...';
 
   try {
-    const url = YF_PROXY+'/v8/finance/chart/'+currentSym+'?interval='+cfg.interval+'&range='+cfg.range;
-    const data = await yfFetch(url);
+    const data = await yfFetch(currentSym, cfg.interval, cfg.range);
     const candles = parseYFChart(data);
     if (!candles.length) {
       document.getElementById('chartStatus').innerHTML = '暂无数据';
@@ -983,8 +983,7 @@ async function fetchPositions() {
   let totalMV=0, totalPnL=0;
   for (const pos of positions) {
     try {
-      const url = YF_PROXY+'/v8/finance/chart/'+pos.sym+'?interval=1d&range=1d';
-      const data = await yfFetch(url);
+      const data = await yfFetch(pos.sym, '1d', '1d');
       const meta = data?.chart?.result?.[0]?.meta;
       if (!meta) continue;
       const price = parseFloat((meta.regularMarketPrice||0).toFixed(2));
@@ -1152,8 +1151,7 @@ async function runAll() {
     // Map periods (trading days) to Yahoo range parameter
     const rangeMap = {252:'1y', 504:'2y', 756:'3y', 1260:'5y'};
     const range = rangeMap[periods] || '2y';
-    const url = YF_PROXY+'/v8/finance/chart/'+sym+'?interval=1d&range='+range;
-    const data = await yfFetch(url);
+    const data = await yfFetch(sym, '1d', range);
     const candles = parseYFChart(data);
     if (!candles.length) {
       setStatus('股票代码 "'+sym+'" 不存在或暂无数据，请检查', false);
