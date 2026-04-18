@@ -1,5 +1,5 @@
-const KV_URL   = 'https://gorgeous-sunbird-101826.upstash.io';
-const KV_TOKEN = 'gQAAAAAAAAY3CAAIocDEyNzE5NDUyNzk3MjE0YWE3YWYyMmRiODkxZDAxMTllYnAxMTAxODI2';
+const KV_URL   = 'https://devoted-eft-101724.upstash.io';
+const KV_TOKEN = 'gQAAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
 const KEY = 'quantdesk_watchlist';
 
 module.exports = async function handler(req, res) {
@@ -11,7 +11,6 @@ module.exports = async function handler(req, res) {
 
   try {
     if (action === 'save' && list) {
-      // Save: GET /api/watchlist?action=save&list=AAPL,NVDA,TSLA
       const arr = list.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
       const encoded = encodeURIComponent(JSON.stringify(arr));
       const r = await fetch(`${KV_URL}/set/${KEY}/${encoded}`, {
@@ -20,7 +19,6 @@ module.exports = async function handler(req, res) {
       const d = await r.json();
       return res.status(200).json({ ok: true, saved: arr, result: d });
     } else {
-      // Load: GET /api/watchlist
       const r = await fetch(`${KV_URL}/get/${KEY}`, {
         headers: { Authorization: `Bearer ${KV_TOKEN}` }
       });
