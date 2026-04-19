@@ -6,66 +6,75 @@ module.exports = async function handler(req, res) {
   if (!sym) return res.status(400).json({ error: 'symbol required' });
 
   try {
-    // 1. Ticker details (PE, Beta, market cap, shares, etc.)
-    const detailUrl = `https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${KEY}`;
-    const detailRes = await fetch(detailUrl);
+    // 1. Ticker details
+    const [detailRes, prevRes, snapRes, histRes] = await Promise.all([
+      fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${KEY}`),
+      fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${KEY}`),
+      fetch(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${KEY}`),
+      fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/2015-01-01/${new Date().toISOString().slice(0,10)}?adjusted=true&sort=asc&limit=5000&apiKey=${KEY}`)
+    ]);
+
     const detailData = await detailRes.json();
-    const d = detailData.results || {};
+    const prevData   = await prevRes.json();
+    const snapData   = await snapRes.json();
+    const histData   = await histRes.json();
 
-    // 2. Previous close
-    const prevUrl = `https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${KEY}`;
-    const prevRes = await fetch(prevUrl);
-    const prevData = await prevRes.json();
+    const d    = detailData.results || {};
     const prev = prevData.results?.[0] || {};
-
-    // 3. Snapshot (current price, today's open, 52w high/low)
-    const snapUrl = `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${KEY}`;
-    const snapRes = await fetch(snapUrl);
-    const snapData = await snapRes.json();
     const snap = snapData.ticker || {};
-    const day  = snap.day  || {};
-    const prevDay = snap.prevDay || {};
-
-    // 4. All-time high/low — use 10 year daily bars
-    const now = new Date();
-    const from10y = new Date(now - 10*365*86400000).toISOString().slice(0,10);
-    const toStr   = now.toISOString().slice(0,10);
-    const histUrl = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${from10y}/${toStr}?adjusted=true&sort=asc&limit=5000&apiKey=${KEY}`;
-    const histRes = await fetch(histUrl);
-    const histData = await histRes.json();
+    const day  = snap.day || {};
     const bars = histData.results || [];
-    const allTimeHigh = bars.length ? Math.max(...bars.map(b=>b.h)) : null;
-    const allTimeLow  = bars.length ? Math.min(...bars.map(b=>b.l)) : null;
 
-    // 52w high/low from last 365 days
-    const now365 = now - 365*86400000;
+    // 52w high/low
+    const now365 = Date.now() - 365*86400000;
     const bars365 = bars.filter(b => b.t >= now365);
     const week52High = bars365.length ? Math.max(...bars365.map(b=>b.h)) : null;
     const week52Low  = bars365.length ? Math.min(...bars365.map(b=>b.l)) : null;
+    const allTimeHigh = bars.length ? Math.max(...bars.map(b=>b.h)) : null;
+    const allTimeLow  = bars.length ? Math.min(...bars.map(b=>b.l)) : null;
+
+    // Float shares from snapshot
+    const floatShares = snap.shareClassSharesOutstanding || d.share_class_shares_outstanding || null;
+    const sharesOut   = d.weighted_shares_outstanding || d.share_class_shares_outstanding || null;
+
+    // PE ratio: calculate from market cap and earnings if available
+    // Try to get from snapshot fmv or details
+    const price = snap.lastTrade?.p || day.c || prev.c || null;
+    const mktCap = d.market_cap || null;
+
+    // Beta from snapshot
+    const beta = snap.beta || null;
+
+    // Try financials for EPS/PE
+    let peRatio = null, forwardPE = null, eps = null;
+    try {
+      const finRes = await fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=1&sort=period_of_report_date&order=desc&apiKey=${KEY}`);
+      const finData = await finRes.json();
+      const fin = finData.results?.[0];
+      if (fin) {
+        const epsBasic = fin.financials?.income_statement?.basic_earnings_per_share?.value;
+        const epsDiluted = fin.financials?.income_statement?.diluted_earnings_per_share?.value;
+        eps = epsDiluted || epsBasic || null;
+        if (eps && price) peRatio = parseFloat((price / eps).toFixed(2));
+      }
+    } catch(e) {}
 
     const result = {
-      symbol:        sym,
-      name:          d.name || sym,
-      prevClose:     prev.c  || prevDay.c || null,
-      open:          day.o   || null,
-      high:          day.h   || null,
-      low:           day.l   || null,
-      price:         snap.lastTrade?.p || day.c || null,
-      marketCap:     d.market_cap || null,
-      sharesOutstanding: d.share_class_shares_outstanding || d.weighted_shares_outstanding || null,
-      floatShares:   d.floating_shares || null,
+      symbol:      sym,
+      name:        d.name || sym,
+      prevClose:   prev.c || null,
+      open:        day.o  || null,
+      marketCap:   mktCap,
+      sharesOutstanding: sharesOut,
+      floatShares: floatShares,
       week52High,
       week52Low,
       allTimeHigh,
       allTimeLow,
-      // Polygon basic plan doesn't include PE/Beta directly
-      // These come from the ticker details if available
-      peRatio:       d.pe_ratio || null,
-      forwardPE:     d.forward_pe || null,
-      beta:          d.beta || null,
-      description:   d.description || null,
-      listDate:      d.list_date || null,
-      currency:      d.currency_name || 'USD',
+      peRatio,
+      forwardPE,
+      beta,
+      eps,
     };
 
     res.setHeader('Cache-Control', 's-maxage=300');
