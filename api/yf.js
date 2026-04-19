@@ -2,7 +2,7 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const sym = (req.query.symbol || '').toUpperCase().trim();
   const iv  = req.query.interval || '1d';
-  const rng = req.query.range    || '1y';
+  let rng   = req.query.range    || '1y';
   if (!sym) return res.status(400).json({ error: 'symbol required' });
 
   const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
@@ -10,10 +10,10 @@ module.exports = async function handler(req, res) {
   try {
     const now = new Date();
     const rangeMap = {
-      '1d':1,'5d':5,'1mo':30,'3mo':90,'6mo':180,
-      '1y':365,'2y':730,'3y':1095,'5y':1825,'10y':3650
+      '1d':5,'5d':7,'1mo':35,'3mo':95,'6mo':185,
+      '1y':370,'2y':735,'3y':1100,'5y':1830,'10y':3660
     };
-    const days = rangeMap[rng] || 365;
+    const days = rangeMap[rng] || 370;
     const from = new Date(now - days*86400000);
     const toStr   = now.toISOString().slice(0,10);
     const fromStr = from.toISOString().slice(0,10);
