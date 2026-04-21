@@ -1,7 +1,6 @@
 const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 const KV_URL      = 'https://devoted-eft-101724.upstash.io';
 const KV_TOKEN    = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
-const WL_KEY      = 'quantdesk_watchlist';
 const PE_KEY      = 'quantdesk_pe_cache';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
@@ -14,69 +13,32 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // 先看Redis原始返回
-    const raw = await fetch(`${KV_URL}/get/${encodeURIComponent(WL_KEY)}`, {
-      headers: { Authorization: `Bearer ${KV_TOKEN}` },
-    });
-    const rawData = await raw.json();
-
-    // debug模式：直接返回原始数据
-    if (req.query.debug === '1') {
-      return res.status(200).json({
-        raw_result_type: typeof rawData.result,
-        raw_result_length: rawData.result?.length,
-        raw_result_preview: rawData.result?.slice(0, 200),
-      });
-    }
-
-    // 尝试多种解析方式
-    let symbols = [];
-    const raw_result = rawData.result;
-
-    if (Array.isArray(raw_result)) {
-      // 直接就是数组
-      symbols = raw_result;
-    } else if (typeof raw_result === 'string') {
-      // 尝试各种解析方式
-      const attempts = [
-        () => JSON.parse(raw_result),
-        () => JSON.parse(decodeURIComponent(raw_result)),
-        () => JSON.parse(decodeURIComponent(decodeURIComponent(raw_result))),
-      ];
-      for (const attempt of attempts) {
-        try {
-          const parsed = attempt();
-          if (Array.isArray(parsed) && parsed.length > 4) {
-            symbols = parsed;
-            break;
-          } else if (Array.isArray(parsed)) {
-            symbols = parsed; // 即使只有4个也用
-          }
-        } catch(e) {}
-      }
-    }
+    // ── 直接调用 /api/watchlist 获取自选股列表 ──────────────────────────────
+    // 不依赖Redis key解析，直接用现有的watchlist接口
+    const host = req.headers.host || 'localhost:3000';
+    const protocol = host.includes('localhost') ? 'http' : 'https';
+    const wlRes = await fetch(`${protocol}://${host}/api/watchlist`);
+    const wlData = await wlRes.json();
+    const symbols = wlData.list || [];
 
     if (!symbols.length) {
-      return res.status(200).json({
-        message: 'Could not parse watchlist',
-        raw_type: typeof raw_result,
-        raw_preview: String(raw_result).slice(0, 100),
-      });
+      return res.status(200).json({ message: 'No symbols found', updated: 0 });
     }
 
-    // 读取现有缓存
-    const existingRaw = await fetch(`${KV_URL}/get/${encodeURIComponent(PE_KEY)}`, {
-      headers: { Authorization: `Bearer ${KV_TOKEN}` },
-    });
-    const existingData = await existingRaw.json();
+    // ── 读取现有PE缓存 ────────────────────────────────────────────────────────
     let results = {};
     try {
-      const existing = JSON.parse(decodeURIComponent(existingData.result || '{}'));
-      results = existing.data || {};
-    } catch(e) {
-      try { results = JSON.parse(existingData.result || '{}').data || {}; } catch(e2) {}
-    }
+      const cacheRes = await fetch(`${KV_URL}/get/${encodeURIComponent(PE_KEY)}`, {
+        headers: { Authorization: `Bearer ${KV_TOKEN}` },
+      });
+      const cacheData = await cacheRes.json();
+      if (cacheData.result) {
+        const parsed = JSON.parse(decodeURIComponent(cacheData.result));
+        results = parsed.data || {};
+      }
+    } catch(e) {}
 
+    // ── 逐个从Finnhub拉取PE/PEG ──────────────────────────────────────────────
     let successCount = 0, failCount = 0;
 
     for (const sym of symbols) {
@@ -107,9 +69,12 @@ module.exports = async function handler(req, res) {
       await delay(1100);
     }
 
-    // 存入 Redis
-    const savePayload = encodeURIComponent(JSON.stringify({ data: results, updatedAt: new Date().toISOString() }));
-    await fetch(`${KV_URL}/set/${encodeURIComponent(PE_KEY)}/${savePayload}`, {
+    // ── 存入Redis ─────────────────────────────────────────────────────────────
+    const payload = encodeURIComponent(JSON.stringify({
+      data: results,
+      updatedAt: new Date().toISOString(),
+    }));
+    await fetch(`${KV_URL}/set/${encodeURIComponent(PE_KEY)}/${payload}`, {
       headers: { Authorization: `Bearer ${KV_TOKEN}` },
     });
 
@@ -118,11 +83,11 @@ module.exports = async function handler(req, res) {
       total: symbols.length,
       success: successCount,
       failed: failCount,
-      symbols_preview: symbols.slice(0, 5).join(','),
+      symbols_preview: symbols.slice(0, 5).join(',') + '...',
       updatedAt: new Date().toISOString(),
     });
 
   } catch(e) {
-    return res.status(500).json({ error: e.message, stack: e.stack?.slice(0,200) });
+    return res.status(500).json({ error: e.message });
   }
 };
