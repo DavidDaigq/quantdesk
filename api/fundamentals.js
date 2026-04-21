@@ -1,7 +1,8 @@
-const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+const POLYGON_KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+const FMP_KEY     = 'lZVPQHSnmBVVrnt3Bmj1bPaKE9Uf15uO';
 
 async function getDailyReturns(sym, fromStr, toStr) {
-  const url = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=365&apiKey=${KEY}`;
+  const url = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=365&apiKey=${POLYGON_KEY}`;
   const r = await fetch(url);
   const d = await r.json();
   const bars = d.results || [];
@@ -28,23 +29,6 @@ function calcBeta(stockReturns, marketReturns) {
   return parseFloat((cov/varM).toFixed(3));
 }
 
-function extractNetIncome(fin) {
-  const inc = fin?.financials?.income_statement;
-  if (!inc) return null;
-  return inc.net_income_loss_available_to_common_stockholders?.value
-      ?? inc.net_income_loss?.value
-      ?? inc.net_income_loss_attributable_to_parent?.value
-      ?? null;
-}
-
-function extractEPS(fin) {
-  const inc = fin?.financials?.income_statement;
-  if (!inc) return null;
-  return inc.diluted_earnings_per_share?.value
-      ?? inc.basic_earnings_per_share?.value
-      ?? null;
-}
-
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const sym = (req.query.symbol || '').toUpperCase().trim();
@@ -56,19 +40,22 @@ module.exports = async function handler(req, res) {
     const from1y = new Date(now - 370*86400000).toISOString().slice(0,10);
     const from10y= new Date(now - 10*365*86400000).toISOString().slice(0,10);
 
-    const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData] = await Promise.all([
-      fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${KEY}`),
-      fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${KEY}`),
-      fetch(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${KEY}`),
-      fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${from10y}/${toStr}?adjusted=true&sort=asc&limit=5000&apiKey=${KEY}`),
-      getDailyReturns(sym,  from1y, toStr),
+    // 并行拉取 Polygon 基础数据 + FMP 估值数据
+    const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData, fmpRes] = await Promise.all([
+      fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${POLYGON_KEY}`),
+      fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${POLYGON_KEY}`),
+      fetch(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${POLYGON_KEY}`),
+      fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${from10y}/${toStr}?adjusted=true&sort=asc&limit=5000&apiKey=${POLYGON_KEY}`),
+      getDailyReturns(sym,   from1y, toStr),
       getDailyReturns('SPY', from1y, toStr),
+      fetch(`https://financialmodelingprep.com/api/v3/key-metrics-ttm/${sym}?apikey=${FMP_KEY}`),
     ]);
 
     const detailData = await detailRes.json();
     const prevData   = await prevRes.json();
     const snapData   = await snapRes.json();
     const histData   = await histRes.json();
+    const fmpData    = await fmpRes.json();
 
     const d    = detailData.results || {};
     const prev = prevData.results?.[0] || {};
@@ -76,6 +63,7 @@ module.exports = async function handler(req, res) {
     const day  = snap.day || {};
     const bars = histData.results || [];
 
+    // 52周 & 历史最高最低（Polygon K线数据）
     const now365  = Date.now() - 365*86400000;
     const bars365 = bars.filter(b => b.t >= now365);
     const week52High  = bars365.length ? Math.max(...bars365.map(b=>b.h)) : null;
@@ -83,67 +71,27 @@ module.exports = async function handler(req, res) {
     const allTimeHigh = bars.length ? Math.max(...bars.map(b=>b.h)) : null;
     const allTimeLow  = bars.length ? Math.min(...bars.map(b=>b.l)) : null;
 
-    const beta = calcBeta(stockRetData.returns, spyRetData.returns);
-    const sharesOut   = d.weighted_shares_outstanding || d.share_class_shares_outstanding || null;
+    const beta      = calcBeta(stockRetData.returns, spyRetData.returns);
+    const sharesOut = d.weighted_shares_outstanding || d.share_class_shares_outstanding || null;
     const floatShares = d.share_class_shares_outstanding || null;
-    const price       = snap.lastTrade?.p || day.c || prev.c || null;
-    const marketCap   = d.market_cap || null;
+    const marketCap = d.market_cap || null;
 
-    // PE & PEG via Polygon financials
-    let peRatio  = null;
-    let pegRatio = null;
+    // PE / PEG / ForwardPE from FMP
+    let peRatio   = null;
+    let pegRatio  = null;
     let forwardPE = null;
 
     try {
-      const [qRes, aRes] = await Promise.all([
-        fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=8&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`),
-        fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=3&sort=period_of_report_date&order=desc&timeframe=annual&apiKey=${KEY}`),
-      ]);
-      const qData = await qRes.json();
-      const aData = await aRes.json();
-      const quarters = qData.results || [];
-      const annuals  = aData.results || [];
-
-      // TTM净利润 → PE
-      const qNI = quarters.map(q => extractNetIncome(q));
-      const validQNI = qNI.slice(0, 4).filter(v => v !== null);
-      let ttmNI = null;
-      if (validQNI.length === 4) {
-        ttmNI = qNI.slice(0, 4).reduce((a, b) => a + b, 0);
-      } else if (validQNI.length >= 2) {
-        ttmNI = (validQNI.reduce((a, b) => a + b, 0) / validQNI.length) * 4;
-      } else if (annuals.length > 0) {
-        ttmNI = extractNetIncome(annuals[0]);
-      }
-      if (ttmNI && ttmNI > 0 && marketCap) {
-        peRatio = parseFloat((marketCap / ttmNI).toFixed(2));
-      }
-
-      // EPS fallback
-      if (!peRatio && price) {
-        const qEps = quarters.map(q => extractEPS(q));
-        const validEps = qEps.slice(0, 4).filter(v => v !== null);
-        let ttmEps = null;
-        if (validEps.length === 4) ttmEps = qEps.slice(0, 4).reduce((a,b)=>a+b, 0);
-        else if (validEps.length >= 2) ttmEps = (validEps.reduce((a,b)=>a+b,0)/validEps.length)*4;
-        else if (annuals.length > 0) ttmEps = extractEPS(annuals[0]);
-        if (ttmEps && ttmEps > 0) peRatio = parseFloat((price / ttmEps).toFixed(2));
-      }
-
-      // 净利润增长率 → PEG
-      let growthPct = null;
-      if (annuals.length >= 2) {
-        const ni0 = extractNetIncome(annuals[0]);
-        const ni1 = extractNetIncome(annuals[1]);
-        if (ni0 && ni1 && ni1 > 0 && ni0 > 0) growthPct = ((ni0-ni1)/Math.abs(ni1))*100;
-      }
-      if (growthPct === null && quarters.length >= 5) {
-        const niNow = extractNetIncome(quarters[0]);
-        const niYoY = extractNetIncome(quarters[4]);
-        if (niNow && niYoY && niYoY > 0 && niNow > 0) growthPct = ((niNow-niYoY)/Math.abs(niYoY))*100;
-      }
-      if (peRatio && growthPct !== null && growthPct > 0 && growthPct < 500) {
-        pegRatio = parseFloat((peRatio / growthPct).toFixed(2));
+      const m = Array.isArray(fmpData) ? fmpData[0] : fmpData;
+      if (m && !m.error) {
+        peRatio   = m.peRatioTTM  != null ? parseFloat(m.peRatioTTM.toFixed(2))  : null;
+        pegRatio  = m.pegRatioTTM != null ? parseFloat(m.pegRatioTTM.toFixed(2)) : null;
+        // FMP 没有直接的 forwardPE TTM，用 priceEarningsRatio 作为 fallback
+        forwardPE = m.priceToEarningsRatioTTM != null
+          ? parseFloat(m.priceToEarningsRatioTTM.toFixed(2)) : null;
+        // 过滤掉异常值
+        if (peRatio  && (peRatio  < 0 || peRatio  > 10000)) peRatio  = null;
+        if (pegRatio && (pegRatio < 0 || pegRatio > 100))   pegRatio = null;
       }
     } catch(e) {}
 
