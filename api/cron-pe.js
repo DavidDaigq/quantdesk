@@ -5,8 +5,8 @@
 const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 const KV_URL      = 'https://devoted-eft-101724.upstash.io';
 const KV_TOKEN    = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
-const WL_KEY      = 'quantdesk_watchlist';   // 自选股列表key
-const PE_KEY      = 'quantdesk_pe_cache';    // PE/PEG缓存key
+const WL_KEY      = 'quantdesk_watchlist';
+const PE_KEY      = 'quantdesk_pe_cache';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -15,11 +15,19 @@ async function redisGet(key) {
     headers: { Authorization: `Bearer ${KV_TOKEN}` },
   });
   const d = await r.json();
-  return d.result ? JSON.parse(d.result) : null;
+  if (!d.result) return null;
+  // watchlist.js 存储时用了 encodeURIComponent，所以需要先 decode
+  try {
+    return JSON.parse(decodeURIComponent(d.result));
+  } catch(e) {
+    try { return JSON.parse(d.result); } catch(e2) { return null; }
+  }
 }
 
 async function redisSet(key, value) {
-  await fetch(`${KV_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(JSON.stringify(value))}`, {
+  // pe_cache 直接存 JSON，不需要 encodeURIComponent
+  const encoded = encodeURIComponent(JSON.stringify(value));
+  await fetch(`${KV_URL}/set/${encodeURIComponent(key)}/${encoded}`, {
     headers: { Authorization: `Bearer ${KV_TOKEN}` },
   });
 }
@@ -38,12 +46,12 @@ module.exports = async function handler(req, res) {
     const symbols = Array.isArray(watchlist) ? watchlist : [];
 
     if (!symbols.length) {
-      return res.status(200).json({ message: 'No symbols found', updated: 0 });
+      return res.status(200).json({ message: 'No symbols found in Redis', updated: 0 });
     }
 
-    // 读取现有缓存（保留旧数据，只更新新数据）
+    // 读取现有缓存（保留旧数据）
     const existing = await redisGet(PE_KEY) || { data: {} };
-    const results = existing.data || {};
+    const results = (existing && existing.data) ? existing.data : {};
 
     let successCount = 0, failCount = 0;
 
@@ -87,6 +95,7 @@ module.exports = async function handler(req, res) {
       total: symbols.length,
       success: successCount,
       failed: failCount,
+      symbols: symbols.slice(0, 5).join(',') + '...',  // 显示前5只确认
       updatedAt: new Date().toISOString(),
     });
 
