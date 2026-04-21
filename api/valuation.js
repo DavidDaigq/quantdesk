@@ -1,10 +1,128 @@
 // /api/valuation.js
-// 用 Yahoo Finance quoteSummary 获取 PE / PEG / 市值等估值数据
-// 覆盖率远高于 Polygon financials 接口
+// 完全使用 Polygon.io 专业数据计算 PE / PEG
+// PE  = 市值 / TTM净利润
+// PEG = PE / 净利润同比增长率
+
+const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+
+// 从财务数据里提取净利润
+function extractNetIncome(fin) {
+  const inc = fin?.financials?.income_statement;
+  if (!inc) return null;
+  // 优先用归属于普通股东的净利润
+  const ni = inc.net_income_loss_available_to_common_stockholders?.value
+          ?? inc.net_income_loss?.value
+          ?? inc.net_income_loss_attributable_to_parent?.value
+          ?? null;
+  return ni;
+}
+
+// 从财务数据里提取EPS（多路fallback）
+function extractEPS(fin) {
+  const inc = fin?.financials?.income_statement;
+  if (!inc) return null;
+  return inc.diluted_earnings_per_share?.value
+      ?? inc.basic_earnings_per_share?.value
+      ?? null;
+}
+
+async function calcPE_PEG(sym, marketCap, price) {
+  let peRatio  = null;
+  let pegRatio = null;
+
+  try {
+    // 同时拉季度(8个) + 年度(3个) 财务数据
+    const [qRes, aRes] = await Promise.all([
+      fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=8&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`),
+      fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=3&sort=period_of_report_date&order=desc&timeframe=annual&apiKey=${KEY}`),
+    ]);
+
+    const qData = await qRes.json();
+    const aData = await aRes.json();
+    const quarters = qData.results || [];
+    const annuals  = aData.results || [];
+
+    // ── PE计算 ────────────────────────────────────────────────────────────────
+    // 方法1: TTM净利润法（最准）
+    // TTM净利润 = 最近4个季度净利润之和
+    const qNI = quarters.map(q => extractNetIncome(q));
+    const validQNI = qNI.slice(0, 4).filter(v => v !== null);
+
+    let ttmNI = null;
+    if (validQNI.length === 4) {
+      ttmNI = qNI.slice(0, 4).reduce((a, b) => a + b, 0);
+    } else if (validQNI.length >= 2) {
+      ttmNI = (validQNI.reduce((a, b) => a + b, 0) / validQNI.length) * 4;
+    } else if (annuals.length > 0) {
+      ttmNI = extractNetIncome(annuals[0]);
+    }
+
+    if (ttmNI && ttmNI > 0 && marketCap) {
+      peRatio = parseFloat((marketCap / ttmNI).toFixed(2));
+    }
+
+    // 方法2: EPS法 fallback（如果净利润拿不到）
+    if (!peRatio && price) {
+      const qEps = quarters.map(q => extractEPS(q));
+      const validEps = qEps.slice(0, 4).filter(v => v !== null);
+      let ttmEps = null;
+      if (validEps.length === 4) {
+        ttmEps = qEps.slice(0, 4).reduce((a, b) => a + b, 0);
+      } else if (validEps.length >= 2) {
+        ttmEps = (validEps.reduce((a, b) => a + b, 0) / validEps.length) * 4;
+      } else if (annuals.length > 0) {
+        ttmEps = extractEPS(annuals[0]);
+      }
+      if (ttmEps && ttmEps > 0) {
+        peRatio = parseFloat((price / ttmEps).toFixed(2));
+      }
+    }
+
+    // ── PEG计算 ───────────────────────────────────────────────────────────────
+    // 净利润同比增长率
+    let growthPct = null;
+
+    // 方法1: 年度净利润同比（最稳定）
+    if (annuals.length >= 2) {
+      const ni0 = extractNetIncome(annuals[0]);
+      const ni1 = extractNetIncome(annuals[1]);
+      if (ni0 !== null && ni1 !== null && ni1 > 0 && ni0 > 0) {
+        growthPct = ((ni0 - ni1) / Math.abs(ni1)) * 100;
+      }
+    }
+
+    // 方法2: 季度净利润同比（最新季度 vs 去年同季）
+    if (growthPct === null && quarters.length >= 5) {
+      const niNow = extractNetIncome(quarters[0]);
+      const niYoY = extractNetIncome(quarters[4]);
+      if (niNow !== null && niYoY !== null && niYoY > 0 && niNow > 0) {
+        growthPct = ((niNow - niYoY) / Math.abs(niYoY)) * 100;
+      }
+    }
+
+    // 方法3: TTM同比
+    if (growthPct === null && qNI.length >= 8) {
+      const recentTTM = qNI.slice(0, 4).filter(v=>v!==null).length === 4
+        ? qNI.slice(0, 4).reduce((a,b)=>a+b, 0) : null;
+      const priorTTM  = qNI.slice(4, 8).filter(v=>v!==null).length === 4
+        ? qNI.slice(4, 8).reduce((a,b)=>a+b, 0) : null;
+      if (recentTTM && priorTTM && priorTTM > 0 && recentTTM > 0) {
+        growthPct = ((recentTTM - priorTTM) / Math.abs(priorTTM)) * 100;
+      }
+    }
+
+    if (peRatio && growthPct !== null && growthPct > 0 && growthPct < 500) {
+      pegRatio = parseFloat((peRatio / growthPct).toFixed(2));
+    }
+
+  } catch(e) {}
+
+  return { peRatio, pegRatio };
+}
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 's-maxage=3600'); // 1小时缓存
+  res.setHeader('Cache-Control', 's-maxage=3600');
 
   const symbols = (req.query.symbols || '').toUpperCase().split(',').filter(Boolean).slice(0, 20);
   if (!symbols.length) return res.status(400).json({ error: 'symbols required' });
@@ -13,72 +131,26 @@ module.exports = async function handler(req, res) {
 
   await Promise.all(symbols.map(async sym => {
     try {
-      // Yahoo Finance v10 quoteSummary — modules: defaultKeyStatistics + summaryDetail
-      const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${sym}`
-        + `?modules=defaultKeyStatistics,summaryDetail,financialData`;
+      // 先拿市值和最新价格
+      const [detailRes, snapRes] = await Promise.all([
+        fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${KEY}`),
+        fetch(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${KEY}`),
+      ]);
+      const detailData = await detailRes.json();
+      const snapData   = await snapRes.json();
 
-      const r = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-        }
-      });
+      const d     = detailData.results || {};
+      const snap  = snapData.ticker   || {};
+      const price = snap.lastTrade?.p || snap.day?.c || null;
+      const marketCap = d.market_cap  || null;
 
-      if (!r.ok) {
-        results[sym] = { pe: null, peg: null, marketCap: null };
-        return;
-      }
-
-      const data = await r.json();
-      const qs   = data?.quoteSummary?.result?.[0];
-      if (!qs) {
-        results[sym] = { pe: null, peg: null, marketCap: null };
-        return;
-      }
-
-      const ks  = qs.defaultKeyStatistics || {};
-      const sd  = qs.summaryDetail        || {};
-      const fd  = qs.financialData        || {};
-
-      // Trailing PE (最准确，用TTM实际盈利)
-      const trailingPE = sd.trailingPE?.raw ?? ks.trailingPE?.raw ?? null;
-
-      // Forward PE (用未来12个月预期盈利)
-      const forwardPE  = sd.forwardPE?.raw ?? ks.forwardPE?.raw ?? null;
-
-      // PEG ratio (Yahoo直接提供，非常准确)
-      const pegRatio   = ks.pegRatio?.raw ?? null;
-
-      // 市值
-      const marketCap  = sd.marketCap?.raw ?? ks.enterpriseValue?.raw ?? null;
-
-      // EPS (TTM)
-      const epsTTM     = ks.trailingEps?.raw ?? null;
-
-      // 52周高低（Yahoo也有，更准）
-      const week52High = sd.fiftyTwoWeekHigh?.raw ?? null;
-      const week52Low  = sd.fiftyTwoWeekLow?.raw  ?? null;
-
-      // Beta
-      const beta       = sd.beta?.raw ?? ks.beta?.raw ?? null;
-
-      // 股本
-      const sharesOut  = ks.sharesOutstanding?.raw ?? null;
-      const floatShares= ks.floatShares?.raw ?? null;
+      const { peRatio, pegRatio } = await calcPE_PEG(sym, marketCap, price);
 
       results[sym] = {
-        pe:         trailingPE ? parseFloat(trailingPE.toFixed(2))  : null,
-        forwardPE:  forwardPE  ? parseFloat(forwardPE.toFixed(2))   : null,
-        peg:        pegRatio   ? parseFloat(pegRatio.toFixed(2))    : null,
-        marketCap,
-        epsTTM,
-        week52High,
-        week52Low,
-        beta:       beta       ? parseFloat(beta.toFixed(3))        : null,
-        sharesOut,
-        floatShares,
+        pe:        peRatio,
+        peg:       pegRatio,
+        marketCap: marketCap,
       };
-
     } catch(e) {
       results[sym] = { pe: null, peg: null, marketCap: null };
     }
