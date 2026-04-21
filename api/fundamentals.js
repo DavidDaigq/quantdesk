@@ -1,5 +1,5 @@
-const POLYGON_KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
-const FMP_KEY     = 'lZVPQHSnmBVVrnt3Bmj1bPaKE9Uf15uO';
+const POLYGON_KEY  = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+const FINNHUB_KEY  = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 
 async function getDailyReturns(sym, fromStr, toStr) {
   const url = `https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=365&apiKey=${POLYGON_KEY}`;
@@ -40,22 +40,22 @@ module.exports = async function handler(req, res) {
     const from1y = new Date(now - 370*86400000).toISOString().slice(0,10);
     const from10y= new Date(now - 10*365*86400000).toISOString().slice(0,10);
 
-    // 并行拉取 Polygon 基础数据 + FMP 估值数据
-    const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData, fmpRes] = await Promise.all([
+    // 并行拉取 Polygon 基础数据 + Finnhub 估值数据
+    const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData, finnhubRes] = await Promise.all([
       fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${POLYGON_KEY}`),
       fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${POLYGON_KEY}`),
       fetch(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${POLYGON_KEY}`),
       fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${from10y}/${toStr}?adjusted=true&sort=asc&limit=5000&apiKey=${POLYGON_KEY}`),
       getDailyReturns(sym,   from1y, toStr),
       getDailyReturns('SPY', from1y, toStr),
-      fetch(`https://financialmodelingprep.com/api/v3/key-metrics-ttm/${sym}?apikey=${FMP_KEY}`),
+      fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${FINNHUB_KEY}`),
     ]);
 
-    const detailData = await detailRes.json();
-    const prevData   = await prevRes.json();
-    const snapData   = await snapRes.json();
-    const histData   = await histRes.json();
-    const fmpData    = await fmpRes.json();
+    const detailData  = await detailRes.json();
+    const prevData    = await prevRes.json();
+    const snapData    = await snapRes.json();
+    const histData    = await histRes.json();
+    const finnhubData = await finnhubRes.json();
 
     const d    = detailData.results || {};
     const prev = prevData.results?.[0] || {};
@@ -63,7 +63,7 @@ module.exports = async function handler(req, res) {
     const day  = snap.day || {};
     const bars = histData.results || [];
 
-    // 52周 & 历史最高最低（Polygon K线数据）
+    // 52周 & 历史最高最低
     const now365  = Date.now() - 365*86400000;
     const bars365 = bars.filter(b => b.t >= now365);
     const week52High  = bars365.length ? Math.max(...bars365.map(b=>b.h)) : null;
@@ -74,25 +74,21 @@ module.exports = async function handler(req, res) {
     const beta      = calcBeta(stockRetData.returns, spyRetData.returns);
     const sharesOut = d.weighted_shares_outstanding || d.share_class_shares_outstanding || null;
     const floatShares = d.share_class_shares_outstanding || null;
-    const marketCap = d.market_cap || null;
+    const marketCap   = d.market_cap || null;
 
-    // PE / PEG / ForwardPE from FMP
+    // PE / PEG from Finnhub
     let peRatio   = null;
     let pegRatio  = null;
     let forwardPE = null;
 
     try {
-      const m = Array.isArray(fmpData) ? fmpData[0] : fmpData;
-      if (m && !m.error) {
-        peRatio   = m.peRatioTTM  != null ? parseFloat(m.peRatioTTM.toFixed(2))  : null;
-        pegRatio  = m.pegRatioTTM != null ? parseFloat(m.pegRatioTTM.toFixed(2)) : null;
-        // FMP 没有直接的 forwardPE TTM，用 priceEarningsRatio 作为 fallback
-        forwardPE = m.priceToEarningsRatioTTM != null
-          ? parseFloat(m.priceToEarningsRatioTTM.toFixed(2)) : null;
-        // 过滤掉异常值
-        if (peRatio  && (peRatio  < 0 || peRatio  > 10000)) peRatio  = null;
-        if (pegRatio && (pegRatio < 0 || pegRatio > 100))   pegRatio = null;
-      }
+      const m = finnhubData?.metric || {};
+      const pe  = m['peNormalizedAnnual'] ?? m['peTTM'] ?? null;
+      const peg = m['pegRatio'] ?? null;
+      const fpe = m['forwardPE'] ?? null;
+      peRatio   = (pe  && pe  > 0 && pe  < 10000) ? parseFloat(pe.toFixed(2))  : null;
+      pegRatio  = (peg && peg > 0 && peg < 100)   ? parseFloat(peg.toFixed(2)) : null;
+      forwardPE = (fpe && fpe > 0 && fpe < 10000) ? parseFloat(fpe.toFixed(2)) : null;
     } catch(e) {}
 
     res.setHeader('Cache-Control', 's-maxage=300');
