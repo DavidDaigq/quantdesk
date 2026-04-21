@@ -1,27 +1,22 @@
 // /api/pe.js
-// 从 Redis 缓存读取 PE/PEG 数据，供前端调用
-// 速度极快（Redis读取 < 10ms）
+// 从 Redis 缓存读取 PE/PEG，供前端调用，速度极快
+
+const KV_URL   = 'https://devoted-eft-101724.upstash.io';
+const KV_TOKEN = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
+const PE_KEY   = 'quantdesk_pe_cache';
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 's-maxage=300'); // 5分钟CDN缓存
+  res.setHeader('Cache-Control', 's-maxage=300');
 
   try {
-    const url   = process.env.KV_REST_API_URL;
-    const token = process.env.KV_REST_API_TOKEN;
-
-    if (!url || !token) {
-      return res.status(500).json({ error: 'Redis not configured' });
-    }
-
-    // 从 Redis 读取缓存
-    const r = await fetch(`${url}/get/${encodeURIComponent('pe_cache')}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const r = await fetch(`${KV_URL}/get/${encodeURIComponent(PE_KEY)}`, {
+      headers: { Authorization: `Bearer ${KV_TOKEN}` },
     });
     const d = await r.json();
 
     if (!d.result) {
-      return res.status(200).json({ data: {}, updatedAt: null, message: 'Cache empty — run cron first' });
+      return res.status(200).json({ data: {}, updatedAt: null });
     }
 
     const cache = JSON.parse(d.result);
@@ -36,7 +31,6 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ data: filtered, updatedAt: cache.updatedAt });
     }
 
-    // 返回全部
     return res.status(200).json(cache);
 
   } catch(e) {
