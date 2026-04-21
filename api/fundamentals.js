@@ -78,16 +78,58 @@ module.exports = async function handler(req, res) {
     // Price
     const price = snap.lastTrade?.p || day.c || prev.c || null;
 
-    // PE from financials
-    let peRatio = null;
+    // ── PE & PEG from financials ──────────────────────────────────────────────
+    // 取最近8个季度的财务数据（用于计算TTM EPS和EPS增长率）
+    let peRatio  = null;
+    let pegRatio = null;
+
     try {
-      const finRes  = await fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=1&sort=period_of_report_date&order=desc&apiKey=${KEY}`);
+      const finRes = await fetch(
+        `https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=8&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`
+      );
       const finData = await finRes.json();
-      const fin = finData.results?.[0];
-      if (fin) {
-        const eps = fin.financials?.income_statement?.diluted_earnings_per_share?.value
-                 || fin.financials?.income_statement?.basic_earnings_per_share?.value;
-        if (eps && price && eps > 0) peRatio = parseFloat((price/eps).toFixed(2));
+      const quarters = finData.results || [];
+
+      if (quarters.length > 0) {
+        // 提取每季度的稀释EPS（优先）或基本EPS
+        const epsArr = quarters.map(q => {
+          const inc = q.financials?.income_statement;
+          return inc?.diluted_earnings_per_share?.value
+              ?? inc?.basic_earnings_per_share?.value
+              ?? null;
+        });
+
+        // TTM EPS = 最近4个季度之和
+        const ttmEps = epsArr.slice(0, 4).every(v => v !== null)
+          ? epsArr.slice(0, 4).reduce((a, b) => a + b, 0)
+          : null;
+
+        // Trailing PE = 当前价格 / TTM EPS
+        if (ttmEps && ttmEps > 0 && price) {
+          peRatio = parseFloat((price / ttmEps).toFixed(2));
+        }
+
+        // ── EPS 同比增长率（用于PEG）────────────────────────────────────────
+        // 方法：比较最近4个季度的TTM EPS vs 往前4个季度的TTM EPS
+        // 需要至少8个季度的数据
+        if (epsArr.length >= 8) {
+          const recentTTM = epsArr.slice(0, 4).every(v => v !== null)
+            ? epsArr.slice(0, 4).reduce((a, b) => a + b, 0)
+            : null;
+          const priorTTM  = epsArr.slice(4, 8).every(v => v !== null)
+            ? epsArr.slice(4, 8).reduce((a, b) => a + b, 0)
+            : null;
+
+          if (recentTTM !== null && priorTTM !== null && priorTTM > 0 && recentTTM > 0) {
+            // 同比增长率（百分比）
+            const epsGrowthPct = ((recentTTM - priorTTM) / Math.abs(priorTTM)) * 100;
+
+            // PEG = PE / EPS增长率（增长率需>0才有意义）
+            if (peRatio && epsGrowthPct > 0) {
+              pegRatio = parseFloat((peRatio / epsGrowthPct).toFixed(2));
+            }
+          }
+        }
       }
     } catch(e) {}
 
@@ -105,6 +147,7 @@ module.exports = async function handler(req, res) {
       allTimeHigh,
       allTimeLow,
       peRatio,
+      pegRatio,
       forwardPE:   null,
       beta,
     });
