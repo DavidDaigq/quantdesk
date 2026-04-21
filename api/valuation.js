@@ -1,6 +1,5 @@
 // /api/valuation.js
-// 使用 Financial Modeling Prep (FMP) 获取 PE / PEG
-// FMP 财务数据覆盖率极高，90%+ 美股都有数据
+// 通过伪装浏览器Headers绕过API限制
 
 const FMP_KEY = 'lZVPQHSnmBVVrnt3Bmj1bPaKE9Uf15uO';
 
@@ -15,37 +14,43 @@ module.exports = async function handler(req, res) {
 
   await Promise.all(symbols.map(async sym => {
     try {
-      // FMP /v3/key-metrics — 直接提供 PE, PEG, 市值等
       const r = await fetch(
-        `https://financialmodelingprep.com/api/v3/key-metrics-ttm/${sym}?apikey=${FMP_KEY}`
+        `https://financialmodelingprep.com/api/v3/key-metrics-ttm/${sym}?apikey=${FMP_KEY}`,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://financialmodelingprep.com/',
+            'Origin': 'https://financialmodelingprep.com',
+          }
+        }
       );
 
       if (!r.ok) {
-        results[sym] = { pe: null, peg: null, marketCap: null };
+        results[sym] = { pe: null, peg: null, marketCap: null, _status: r.status };
         return;
       }
 
       const data = await r.json();
       const m = Array.isArray(data) ? data[0] : data;
 
-      if (!m) {
+      if (!m || m.error) {
         results[sym] = { pe: null, peg: null, marketCap: null };
         return;
       }
 
-      // FMP key-metrics-ttm 字段名
-      const pe  = m.peRatioTTM        ?? m.peRatio        ?? null;
-      const peg = m.pegRatioTTM       ?? m.pegRatio       ?? null;
-      const mktCap = m.marketCapTTM   ?? m.marketCap      ?? null;
+      const pe  = m.peRatioTTM  != null ? parseFloat(m.peRatioTTM.toFixed(2))  : null;
+      const peg = m.pegRatioTTM != null ? parseFloat(m.pegRatioTTM.toFixed(2)) : null;
 
       results[sym] = {
-        pe:        pe  ? parseFloat(pe.toFixed(2))     : null,
-        peg:       peg ? parseFloat(peg.toFixed(2))    : null,
-        marketCap: mktCap || null,
+        pe:        (pe  && pe  > 0 && pe  < 10000) ? pe  : null,
+        peg:       (peg && peg > 0 && peg < 100)   ? peg : null,
+        marketCap: null,
       };
 
     } catch(e) {
-      results[sym] = { pe: null, peg: null, marketCap: null };
+      results[sym] = { pe: null, peg: null, marketCap: null, _err: e.message };
     }
   }));
 
