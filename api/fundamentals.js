@@ -28,16 +28,6 @@ function calcBeta(stockReturns, marketReturns) {
   return parseFloat((cov/varM).toFixed(3));
 }
 
-function extractEPS(fin) {
-  const inc = fin?.financials?.income_statement;
-  if (!inc) return null;
-  const diluted = inc.diluted_earnings_per_share?.value;
-  const basic   = inc.basic_earnings_per_share?.value;
-  if (diluted != null) return diluted;
-  if (basic   != null) return basic;
-  return null;
-}
-
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const sym = (req.query.symbol || '').toUpperCase().trim();
@@ -49,13 +39,19 @@ module.exports = async function handler(req, res) {
     const from1y = new Date(now - 370*86400000).toISOString().slice(0,10);
     const from10y= new Date(now - 10*365*86400000).toISOString().slice(0,10);
 
-    const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData] = await Promise.all([
+    // 并行拉取：Polygon基础数据 + Yahoo估值数据
+    const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData, yahooRes] = await Promise.all([
       fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${KEY}`),
       fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${KEY}`),
       fetch(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${sym}?apiKey=${KEY}`),
       fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/range/1/day/${from10y}/${toStr}?adjusted=true&sort=asc&limit=5000&apiKey=${KEY}`),
       getDailyReturns(sym,  from1y, toStr),
       getDailyReturns('SPY', from1y, toStr),
+      // Yahoo Finance quoteSummary — PE/PEG/ForwardPE
+      fetch(
+        `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${sym}?modules=defaultKeyStatistics,summaryDetail`,
+        { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
+      ),
     ]);
 
     const detailData = await detailRes.json();
@@ -69,6 +65,7 @@ module.exports = async function handler(req, res) {
     const day  = snap.day || {};
     const bars = histData.results || [];
 
+    // 52w & all-time high/low from Polygon history
     const now365  = Date.now() - 365*86400000;
     const bars365 = bars.filter(b => b.t >= now365);
     const week52High  = bars365.length ? Math.max(...bars365.map(b=>b.h)) : null;
@@ -76,83 +73,35 @@ module.exports = async function handler(req, res) {
     const allTimeHigh = bars.length ? Math.max(...bars.map(b=>b.h)) : null;
     const allTimeLow  = bars.length ? Math.min(...bars.map(b=>b.l)) : null;
 
-    const beta = calcBeta(stockRetData.returns, spyRetData.returns);
-
+    const beta_calc = calcBeta(stockRetData.returns, spyRetData.returns);
     const sharesOut  = d.weighted_shares_outstanding || d.share_class_shares_outstanding || null;
     const floatShares= d.share_class_shares_outstanding || null;
     const price = snap.lastTrade?.p || day.c || prev.c || null;
 
-    // PE & PEG
+    // PE / PEG / ForwardPE from Yahoo Finance
     let peRatio  = null;
     let pegRatio = null;
+    let forwardPE = null;
+    let beta = beta_calc;
 
     try {
-      // 同时拉季度(8个) 和 年度(3个) 财务数据
-      const [qRes, aRes] = await Promise.all([
-        fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=8&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`),
-        fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=3&sort=period_of_report_date&order=desc&timeframe=annual&apiKey=${KEY}`),
-      ]);
-      const qData = await qRes.json();
-      const aData = await aRes.json();
-      const quarters = qData.results || [];
-      const annuals  = aData.results || [];
-
-      // Trailing PE: TTM EPS = 最近4个季度之和
-      const qEps = quarters.map(q => extractEPS(q));
-      const validQ4 = qEps.slice(0, 4).filter(v => v !== null);
-
-      let ttmEps = null;
-      if (validQ4.length === 4) {
-        ttmEps = qEps.slice(0, 4).reduce((a, b) => a + b, 0);
-      } else if (validQ4.length >= 2) {
-        // 部分季度有数据，年化估算
-        ttmEps = (validQ4.reduce((a, b) => a + b, 0) / validQ4.length) * 4;
-      } else if (annuals.length > 0) {
-        // Fallback：用最新年报EPS
-        ttmEps = extractEPS(annuals[0]);
-      }
-
-      if (ttmEps && ttmEps > 0 && price) {
-        peRatio = parseFloat((price / ttmEps).toFixed(2));
-      }
-
-      // EPS增长率 — 优先年度同比，fallback季度同比，fallback TTM同比
-      let epsGrowthPct = null;
-
-      // 方法1: 年度同比（最稳定）
-      if (annuals.length >= 2) {
-        const eps0 = extractEPS(annuals[0]);
-        const eps1 = extractEPS(annuals[1]);
-        if (eps0 !== null && eps1 !== null && eps1 > 0 && eps0 > 0) {
-          epsGrowthPct = ((eps0 - eps1) / Math.abs(eps1)) * 100;
+      const yahooData = await yahooRes.json();
+      const qs = yahooData?.quoteSummary?.result?.[0];
+      if (qs) {
+        const ks = qs.defaultKeyStatistics || {};
+        const sd = qs.summaryDetail        || {};
+        peRatio   = sd.trailingPE?.raw ?? ks.trailingPE?.raw ?? null;
+        forwardPE = sd.forwardPE?.raw  ?? ks.forwardPE?.raw  ?? null;
+        pegRatio  = ks.pegRatio?.raw   ?? null;
+        // Yahoo beta作为backup（如果自算beta为null）
+        if (beta === null) {
+          beta = sd.beta?.raw ?? ks.beta?.raw ?? null;
         }
+        if (peRatio)   peRatio   = parseFloat(peRatio.toFixed(2));
+        if (forwardPE) forwardPE = parseFloat(forwardPE.toFixed(2));
+        if (pegRatio)  pegRatio  = parseFloat(pegRatio.toFixed(2));
+        if (beta)      beta      = parseFloat(beta.toFixed(3));
       }
-
-      // 方法2: 季度同比（最新季度 vs 去年同季）
-      if (epsGrowthPct === null && quarters.length >= 5) {
-        const epsNow = extractEPS(quarters[0]);
-        const epsYoY = extractEPS(quarters[4]);
-        if (epsNow !== null && epsYoY !== null && epsYoY > 0 && epsNow > 0) {
-          epsGrowthPct = ((epsNow - epsYoY) / Math.abs(epsYoY)) * 100;
-        }
-      }
-
-      // 方法3: TTM同比（需要8个季度）
-      if (epsGrowthPct === null && qEps.length >= 8) {
-        const recentTTM = qEps.slice(0, 4).filter(v=>v!==null).length === 4
-          ? qEps.slice(0, 4).reduce((a,b)=>a+b, 0) : null;
-        const priorTTM  = qEps.slice(4, 8).filter(v=>v!==null).length === 4
-          ? qEps.slice(4, 8).reduce((a,b)=>a+b, 0) : null;
-        if (recentTTM && priorTTM && priorTTM > 0 && recentTTM > 0) {
-          epsGrowthPct = ((recentTTM - priorTTM) / Math.abs(priorTTM)) * 100;
-        }
-      }
-
-      // PEG = PE / EPS增长率（增长率需>0且<500%才有意义）
-      if (peRatio && epsGrowthPct !== null && epsGrowthPct > 0 && epsGrowthPct < 500) {
-        pegRatio = parseFloat((peRatio / epsGrowthPct).toFixed(2));
-      }
-
     } catch(e) {}
 
     res.setHeader('Cache-Control', 's-maxage=300');
@@ -170,7 +119,7 @@ module.exports = async function handler(req, res) {
       allTimeLow,
       peRatio,
       pegRatio,
-      forwardPE:   null,
+      forwardPE,
       beta,
     });
 
