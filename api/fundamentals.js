@@ -28,6 +28,16 @@ function calcBeta(stockReturns, marketReturns) {
   return parseFloat((cov/varM).toFixed(3));
 }
 
+function extractEPS(fin) {
+  const inc = fin?.financials?.income_statement;
+  if (!inc) return null;
+  const diluted = inc.diluted_earnings_per_share?.value;
+  const basic   = inc.basic_earnings_per_share?.value;
+  if (diluted != null) return diluted;
+  if (basic   != null) return basic;
+  return null;
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const sym = (req.query.symbol || '').toUpperCase().trim();
@@ -39,7 +49,6 @@ module.exports = async function handler(req, res) {
     const from1y = new Date(now - 370*86400000).toISOString().slice(0,10);
     const from10y= new Date(now - 10*365*86400000).toISOString().slice(0,10);
 
-    // Parallel fetch all data
     const [detailRes, prevRes, snapRes, histRes, stockRetData, spyRetData] = await Promise.all([
       fetch(`https://api.polygon.io/v3/reference/tickers/${sym}?apiKey=${KEY}`),
       fetch(`https://api.polygon.io/v2/aggs/ticker/${sym}/prev?adjusted=true&apiKey=${KEY}`),
@@ -60,7 +69,6 @@ module.exports = async function handler(req, res) {
     const day  = snap.day || {};
     const bars = histData.results || [];
 
-    // 52w & all-time high/low
     const now365  = Date.now() - 365*86400000;
     const bars365 = bars.filter(b => b.t >= now365);
     const week52High  = bars365.length ? Math.max(...bars365.map(b=>b.h)) : null;
@@ -68,69 +76,83 @@ module.exports = async function handler(req, res) {
     const allTimeHigh = bars.length ? Math.max(...bars.map(b=>b.h)) : null;
     const allTimeLow  = bars.length ? Math.min(...bars.map(b=>b.l)) : null;
 
-    // Beta calculation
     const beta = calcBeta(stockRetData.returns, spyRetData.returns);
 
-    // Shares
     const sharesOut  = d.weighted_shares_outstanding || d.share_class_shares_outstanding || null;
     const floatShares= d.share_class_shares_outstanding || null;
-
-    // Price
     const price = snap.lastTrade?.p || day.c || prev.c || null;
 
-    // ── PE & PEG from financials ──────────────────────────────────────────────
-    // 取最近8个季度的财务数据（用于计算TTM EPS和EPS增长率）
+    // PE & PEG
     let peRatio  = null;
     let pegRatio = null;
 
     try {
-      const finRes = await fetch(
-        `https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=8&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`
-      );
-      const finData = await finRes.json();
-      const quarters = finData.results || [];
+      // 同时拉季度(8个) 和 年度(3个) 财务数据
+      const [qRes, aRes] = await Promise.all([
+        fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=8&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`),
+        fetch(`https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=3&sort=period_of_report_date&order=desc&timeframe=annual&apiKey=${KEY}`),
+      ]);
+      const qData = await qRes.json();
+      const aData = await aRes.json();
+      const quarters = qData.results || [];
+      const annuals  = aData.results || [];
 
-      if (quarters.length > 0) {
-        // 提取每季度的稀释EPS（优先）或基本EPS
-        const epsArr = quarters.map(q => {
-          const inc = q.financials?.income_statement;
-          return inc?.diluted_earnings_per_share?.value
-              ?? inc?.basic_earnings_per_share?.value
-              ?? null;
-        });
+      // Trailing PE: TTM EPS = 最近4个季度之和
+      const qEps = quarters.map(q => extractEPS(q));
+      const validQ4 = qEps.slice(0, 4).filter(v => v !== null);
 
-        // TTM EPS = 最近4个季度之和
-        const ttmEps = epsArr.slice(0, 4).every(v => v !== null)
-          ? epsArr.slice(0, 4).reduce((a, b) => a + b, 0)
-          : null;
+      let ttmEps = null;
+      if (validQ4.length === 4) {
+        ttmEps = qEps.slice(0, 4).reduce((a, b) => a + b, 0);
+      } else if (validQ4.length >= 2) {
+        // 部分季度有数据，年化估算
+        ttmEps = (validQ4.reduce((a, b) => a + b, 0) / validQ4.length) * 4;
+      } else if (annuals.length > 0) {
+        // Fallback：用最新年报EPS
+        ttmEps = extractEPS(annuals[0]);
+      }
 
-        // Trailing PE = 当前价格 / TTM EPS
-        if (ttmEps && ttmEps > 0 && price) {
-          peRatio = parseFloat((price / ttmEps).toFixed(2));
-        }
+      if (ttmEps && ttmEps > 0 && price) {
+        peRatio = parseFloat((price / ttmEps).toFixed(2));
+      }
 
-        // ── EPS 同比增长率（用于PEG）────────────────────────────────────────
-        // 方法：比较最近4个季度的TTM EPS vs 往前4个季度的TTM EPS
-        // 需要至少8个季度的数据
-        if (epsArr.length >= 8) {
-          const recentTTM = epsArr.slice(0, 4).every(v => v !== null)
-            ? epsArr.slice(0, 4).reduce((a, b) => a + b, 0)
-            : null;
-          const priorTTM  = epsArr.slice(4, 8).every(v => v !== null)
-            ? epsArr.slice(4, 8).reduce((a, b) => a + b, 0)
-            : null;
+      // EPS增长率 — 优先年度同比，fallback季度同比，fallback TTM同比
+      let epsGrowthPct = null;
 
-          if (recentTTM !== null && priorTTM !== null && priorTTM > 0 && recentTTM > 0) {
-            // 同比增长率（百分比）
-            const epsGrowthPct = ((recentTTM - priorTTM) / Math.abs(priorTTM)) * 100;
-
-            // PEG = PE / EPS增长率（增长率需>0才有意义）
-            if (peRatio && epsGrowthPct > 0) {
-              pegRatio = parseFloat((peRatio / epsGrowthPct).toFixed(2));
-            }
-          }
+      // 方法1: 年度同比（最稳定）
+      if (annuals.length >= 2) {
+        const eps0 = extractEPS(annuals[0]);
+        const eps1 = extractEPS(annuals[1]);
+        if (eps0 !== null && eps1 !== null && eps1 > 0 && eps0 > 0) {
+          epsGrowthPct = ((eps0 - eps1) / Math.abs(eps1)) * 100;
         }
       }
+
+      // 方法2: 季度同比（最新季度 vs 去年同季）
+      if (epsGrowthPct === null && quarters.length >= 5) {
+        const epsNow = extractEPS(quarters[0]);
+        const epsYoY = extractEPS(quarters[4]);
+        if (epsNow !== null && epsYoY !== null && epsYoY > 0 && epsNow > 0) {
+          epsGrowthPct = ((epsNow - epsYoY) / Math.abs(epsYoY)) * 100;
+        }
+      }
+
+      // 方法3: TTM同比（需要8个季度）
+      if (epsGrowthPct === null && qEps.length >= 8) {
+        const recentTTM = qEps.slice(0, 4).filter(v=>v!==null).length === 4
+          ? qEps.slice(0, 4).reduce((a,b)=>a+b, 0) : null;
+        const priorTTM  = qEps.slice(4, 8).filter(v=>v!==null).length === 4
+          ? qEps.slice(4, 8).reduce((a,b)=>a+b, 0) : null;
+        if (recentTTM && priorTTM && priorTTM > 0 && recentTTM > 0) {
+          epsGrowthPct = ((recentTTM - priorTTM) / Math.abs(priorTTM)) * 100;
+        }
+      }
+
+      // PEG = PE / EPS增长率（增长率需>0且<500%才有意义）
+      if (peRatio && epsGrowthPct !== null && epsGrowthPct > 0 && epsGrowthPct < 500) {
+        pegRatio = parseFloat((peRatio / epsGrowthPct).toFixed(2));
+      }
+
     } catch(e) {}
 
     res.setHeader('Cache-Control', 's-maxage=300');
