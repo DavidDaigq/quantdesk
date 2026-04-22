@@ -1,10 +1,12 @@
 // /api/cron-pe.js
-// 每日定时更新PE/PEG缓存
-// 改为完全并行请求，10秒内处理完所有股票
+// 分批并行处理，每批30只，批次间隔2秒
+// 总时间约：7批 × 2秒 = 14秒，在Vercel 60秒限制内
 
 const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 const KV_URL      = 'https://devoted-eft-101724.upstash.io';
 const KV_TOKEN    = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
+
+const delay = ms => new Promise(r => setTimeout(r, ms));
 
 async function setCached(sym, data) {
   try {
@@ -35,8 +37,8 @@ async function fetchAndCache(sym) {
       }
     }
     const result = { pe: peValid ? parseFloat(pe.toFixed(2)) : null, peg };
-    if (result.pe !== null) await setCached(sym, result);
-    return result.pe !== null;
+    await setCached(sym, result);
+    return true;
   } catch(e) { return false; }
 }
 
@@ -48,7 +50,6 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // 从 /api/watchlist 获取完整自选股列表
     const host = req.headers.host || 'quantdesk-drab.vercel.app';
     const protocol = host.includes('localhost') ? 'http' : 'https';
     const wlRes = await fetch(`${protocol}://${host}/api/watchlist`);
@@ -59,13 +60,19 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ message: 'No symbols', updated: 0 });
     }
 
-    // 完全并行处理所有股票（Finnhub免费版60次/分钟，并行不超时）
-    const results = await Promise.allSettled(
-      symbols.map(sym => fetchAndCache(sym))
-    );
+    // 每批30只并行，批次间隔2秒
+    // 30只/分钟限制60次 → 安全范围内
+    const BATCH = 30;
+    let success = 0, failed = 0;
 
-    const success = results.filter(r => r.status === 'fulfilled' && r.value).length;
-    const failed  = symbols.length - success;
+    for (let i = 0; i < symbols.length; i += BATCH) {
+      const chunk = symbols.slice(i, i + BATCH);
+      const results = await Promise.allSettled(chunk.map(sym => fetchAndCache(sym)));
+      success += results.filter(r => r.status === 'fulfilled' && r.value).length;
+      failed  += results.filter(r => r.status !== 'fulfilled' || !r.value).length;
+      // 批次间隔2秒（除最后一批）
+      if (i + BATCH < symbols.length) await delay(2000);
+    }
 
     return res.status(200).json({
       message: 'PE/PEG cache updated',
