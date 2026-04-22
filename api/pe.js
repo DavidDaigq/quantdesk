@@ -63,7 +63,7 @@ module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
   const symbols = (req.query.symbols || '').toUpperCase().split(',')
-    .filter(Boolean).slice(0, 60); // 最多60个，并行处理
+    .filter(Boolean).slice(0, 30); // 最多30个并行，避免触发Finnhub限速
   if (!symbols.length) return res.status(400).json({ error: 'symbols required' });
 
   const results = {};
