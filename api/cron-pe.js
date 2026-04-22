@@ -1,6 +1,7 @@
 // /api/cron-pe.js
-// 分批并行处理，每批30只，批次间隔2秒
-// 总时间约：7批 × 2秒 = 14秒，在Vercel 60秒限制内
+// 严格限速：每批20只并行，批次间隔1.5秒
+// 每分钟约40次请求，安全低于Finnhub免费版60次/分钟限制
+// 192只股票约需要：10批 × 1.5秒 = 15秒
 
 const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 const KV_URL      = 'https://devoted-eft-101724.upstash.io';
@@ -17,12 +18,13 @@ async function setCached(sym, data) {
   } catch(e) {}
 }
 
-async function fetchAndCache(sym) {
+async function fetchOne(sym) {
   try {
     const r = await fetch(
       `https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${FINNHUB_KEY}`
     );
-    if (!r.ok) return false;
+    if (r.status === 429) return { sym, ok: false, reason: 'rate_limit' };
+    if (!r.ok) return { sym, ok: false, reason: r.status };
     const data = await r.json();
     const m = data?.metric || {};
     const pe = m['peTTM'] ?? m['peNormalizedAnnual'] ?? null;
@@ -38,8 +40,10 @@ async function fetchAndCache(sym) {
     }
     const result = { pe: peValid ? parseFloat(pe.toFixed(2)) : null, peg };
     await setCached(sym, result);
-    return true;
-  } catch(e) { return false; }
+    return { sym, ok: true, pe: result.pe };
+  } catch(e) {
+    return { sym, ok: false, reason: e.message };
+  }
 }
 
 module.exports = async function handler(req, res) {
@@ -60,18 +64,21 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ message: 'No symbols', updated: 0 });
     }
 
-    // 每批30只并行，批次间隔2秒
-    // 30只/分钟限制60次 → 安全范围内
-    const BATCH = 30;
-    let success = 0, failed = 0;
+    // 每批20只并行，批次间隔1.5秒
+    const BATCH = 20;
+    let success = 0, failed = 0, rateLimited = 0;
 
     for (let i = 0; i < symbols.length; i += BATCH) {
       const chunk = symbols.slice(i, i + BATCH);
-      const results = await Promise.allSettled(chunk.map(sym => fetchAndCache(sym)));
-      success += results.filter(r => r.status === 'fulfilled' && r.value).length;
-      failed  += results.filter(r => r.status !== 'fulfilled' || !r.value).length;
-      // 批次间隔2秒（除最后一批）
-      if (i + BATCH < symbols.length) await delay(2000);
+      const results = await Promise.all(chunk.map(sym => fetchOne(sym)));
+      results.forEach(r => {
+        if (r.ok) success++;
+        else {
+          failed++;
+          if (r.reason === 'rate_limit') rateLimited++;
+        }
+      });
+      if (i + BATCH < symbols.length) await delay(1500);
     }
 
     return res.status(200).json({
@@ -79,6 +86,7 @@ module.exports = async function handler(req, res) {
       total: symbols.length,
       success,
       failed,
+      rateLimited,
       updatedAt: new Date().toISOString(),
     });
 
