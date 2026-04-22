@@ -40,11 +40,32 @@ async function fetchFromFinnhub(sym) {
     if (!r.ok) return { pe: null, peg: null };
     const data = await r.json();
     const m = data?.metric || {};
-    const pe  = m['peNormalizedAnnual'] ?? m['peTTM'] ?? null;
-    const peg = m['pegRatio'] ?? null;
+
+    // PE：优先用TTM，fallback用年化
+    const pe = m['peTTM'] ?? m['peNormalizedAnnual'] ?? null;
+
+    // PEG：Finnhub没有直接字段，自行计算
+    // PEG = PE / EPS增长率
+    // 优先用3年EPS增长率（更稳定），fallback用5年
+    // Finnhub的epsGrowth字段已经是百分比（如6.89表示6.89%）
+    let peg = null;
+    const peValid = pe && pe > 0 && pe < 10000;
+    if (peValid) {
+      const g3 = m['epsGrowth3Y'] ?? null;
+      const g5 = m['epsGrowth5Y'] ?? null;
+      const g  = (g3 != null && g3 > 0) ? g3
+               : (g5 != null && g5 > 0) ? g5
+               : null;
+      if (g && g > 0) {
+        peg = parseFloat((pe / g).toFixed(2));
+        // 过滤异常值
+        if (peg <= 0 || peg > 100) peg = null;
+      }
+    }
+
     return {
-      pe:  (pe  && pe  > 0 && pe  < 10000) ? parseFloat(pe.toFixed(2))  : null,
-      peg: (peg && peg > 0 && peg < 100)   ? parseFloat(peg.toFixed(2)) : null,
+      pe:  peValid ? parseFloat(pe.toFixed(2)) : null,
+      peg: peg,
     };
   } catch(e) { return { pe: null, peg: null }; }
 }
