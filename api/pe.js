@@ -1,37 +1,33 @@
 // /api/pe.js
-// 按需获取PE/PEG：先查Redis缓存(24小时有效)，没有才实时从Finnhub获取
-// 每次最多处理5只股票，避免超时
+// 按需获取PE/PEG：先查Redis缓存(24小时)，没有才从Finnhub获取
+// 并行请求，速度极快
 
 const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 const KV_URL      = 'https://devoted-eft-101724.upstash.io';
 const KV_TOKEN    = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
 
-// 从Redis读单个股票的PE缓存
 async function getCached(sym) {
   try {
-    const key = `pe_${sym}`;
-    const r = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, {
+    const r = await fetch(`${KV_URL}/get/${encodeURIComponent('pe_'+sym)}`, {
       headers: { Authorization: `Bearer ${KV_TOKEN}` },
     });
     const d = await r.json();
     if (!d.result) return null;
-    return JSON.parse(d.result);
+    const parsed = JSON.parse(d.result);
+    // 只有pe不为null才算有效缓存，避免返回旧的null值
+    return (parsed && parsed.pe !== undefined) ? parsed : null;
   } catch(e) { return null; }
 }
 
-// 写入Redis，24小时过期
 async function setCached(sym, data) {
   try {
-    const key = `pe_${sym}`;
     const val = encodeURIComponent(JSON.stringify(data));
-    // EX 86400 = 24小时过期
-    await fetch(`${KV_URL}/set/${encodeURIComponent(key)}/${val}/EX/86400`, {
+    await fetch(`${KV_URL}/set/${encodeURIComponent('pe_'+sym)}/${val}/EX/86400`, {
       headers: { Authorization: `Bearer ${KV_TOKEN}` },
     });
   } catch(e) {}
 }
 
-// 从Finnhub实时获取
 async function fetchFromFinnhub(sym) {
   try {
     const r = await fetch(
@@ -41,25 +37,17 @@ async function fetchFromFinnhub(sym) {
     const data = await r.json();
     const m = data?.metric || {};
 
-    // PE：优先用TTM，fallback用年化
     const pe = m['peTTM'] ?? m['peNormalizedAnnual'] ?? null;
-
-    // PEG：Finnhub没有直接字段，自行计算
-    // PEG = PE / EPS增长率
-    // 优先用3年EPS增长率（更稳定），fallback用5年
-    // Finnhub的epsGrowth字段已经是百分比（如6.89表示6.89%）
-    let peg = null;
     const peValid = pe && pe > 0 && pe < 10000;
+
+    // PEG = PE / EPS增长率（用3年，fallback 5年）
+    let peg = null;
     if (peValid) {
-      const g3 = m['epsGrowth3Y'] ?? null;
-      const g5 = m['epsGrowth5Y'] ?? null;
-      const g  = (g3 != null && g3 > 0) ? g3
-               : (g5 != null && g5 > 0) ? g5
-               : null;
+      const g = (m['epsGrowth3Y'] > 0 ? m['epsGrowth3Y'] : null)
+             ?? (m['epsGrowth5Y'] > 0 ? m['epsGrowth5Y'] : null);
       if (g && g > 0) {
-        peg = parseFloat((pe / g).toFixed(2));
-        // 过滤异常值
-        if (peg <= 0 || peg > 100) peg = null;
+        const raw = pe / g;
+        peg = (raw > 0 && raw < 100) ? parseFloat(raw.toFixed(2)) : null;
       }
     }
 
@@ -72,26 +60,27 @@ async function fetchFromFinnhub(sym) {
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'no-store'); // 不缓存响应，每次都查Redis
+  res.setHeader('Cache-Control', 'no-store');
 
   const symbols = (req.query.symbols || '').toUpperCase().split(',')
-    .filter(Boolean).slice(0, 8); // 每次最多8只，避免超时
+    .filter(Boolean).slice(0, 60); // 最多60个，并行处理
   if (!symbols.length) return res.status(400).json({ error: 'symbols required' });
 
   const results = {};
 
+  // 并行处理所有股票
   await Promise.all(symbols.map(async sym => {
-    // 1. 先查Redis缓存
+    // 先查缓存
     const cached = await getCached(sym);
-    if (cached) {
+    if (cached && cached.pe !== null) {
       results[sym] = cached;
       return;
     }
-    // 2. 缓存没有，实时从Finnhub获取
+    // 实时获取
     const fresh = await fetchFromFinnhub(sym);
     results[sym] = fresh;
-    // 3. 写入Redis缓存（24小时）
-    await setCached(sym, fresh);
+    // 写缓存（只缓存有效数据）
+    if (fresh.pe !== null) await setCached(sym, fresh);
   }));
 
   return res.status(200).json({ data: results });
