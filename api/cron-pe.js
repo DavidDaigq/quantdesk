@@ -1,9 +1,44 @@
+// /api/cron-pe.js
+// 每日定时更新PE/PEG缓存
+// 改为完全并行请求，10秒内处理完所有股票
+
 const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 const KV_URL      = 'https://devoted-eft-101724.upstash.io';
 const KV_TOKEN    = 'gQAAAAAAAY1cAAIocDI2OGIwYzMwZjlhMzk0OWU0YWUwOWFlYzAzMTAyZjI4OXAyMTAxNzI0';
-const PE_KEY      = 'quantdesk_pe_cache';
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
+async function setCached(sym, data) {
+  try {
+    const val = encodeURIComponent(JSON.stringify(data));
+    await fetch(`${KV_URL}/set/${encodeURIComponent('pe_'+sym)}/${val}/EX/86400`, {
+      headers: { Authorization: `Bearer ${KV_TOKEN}` },
+    });
+  } catch(e) {}
+}
+
+async function fetchAndCache(sym) {
+  try {
+    const r = await fetch(
+      `https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${FINNHUB_KEY}`
+    );
+    if (!r.ok) return false;
+    const data = await r.json();
+    const m = data?.metric || {};
+    const pe = m['peTTM'] ?? m['peNormalizedAnnual'] ?? null;
+    const peValid = pe && pe > 0 && pe < 10000;
+    let peg = null;
+    if (peValid) {
+      const g = (m['epsGrowth3Y'] > 0 ? m['epsGrowth3Y'] : null)
+             ?? (m['epsGrowth5Y'] > 0 ? m['epsGrowth5Y'] : null);
+      if (g && g > 0) {
+        const raw = pe / g;
+        peg = (raw > 0 && raw < 100) ? parseFloat(raw.toFixed(2)) : null;
+      }
+    }
+    const result = { pe: peValid ? parseFloat(pe.toFixed(2)) : null, peg };
+    if (result.pe !== null) await setCached(sym, result);
+    return result.pe !== null;
+  } catch(e) { return false; }
+}
 
 module.exports = async function handler(req, res) {
   const cronSecret = process.env.CRON_SECRET || 'quantdesk-cron-2025';
@@ -13,77 +48,30 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // ── 直接调用 /api/watchlist 获取自选股列表 ──────────────────────────────
-    // 不依赖Redis key解析，直接用现有的watchlist接口
-    const host = req.headers.host || 'localhost:3000';
+    // 从 /api/watchlist 获取完整自选股列表
+    const host = req.headers.host || 'quantdesk-drab.vercel.app';
     const protocol = host.includes('localhost') ? 'http' : 'https';
     const wlRes = await fetch(`${protocol}://${host}/api/watchlist`);
     const wlData = await wlRes.json();
     const symbols = wlData.list || [];
 
     if (!symbols.length) {
-      return res.status(200).json({ message: 'No symbols found', updated: 0 });
+      return res.status(200).json({ message: 'No symbols', updated: 0 });
     }
 
-    // ── 读取现有PE缓存 ────────────────────────────────────────────────────────
-    let results = {};
-    try {
-      const cacheRes = await fetch(`${KV_URL}/get/${encodeURIComponent(PE_KEY)}`, {
-        headers: { Authorization: `Bearer ${KV_TOKEN}` },
-      });
-      const cacheData = await cacheRes.json();
-      if (cacheData.result) {
-        const parsed = JSON.parse(decodeURIComponent(cacheData.result));
-        results = parsed.data || {};
-      }
-    } catch(e) {}
+    // 完全并行处理所有股票（Finnhub免费版60次/分钟，并行不超时）
+    const results = await Promise.allSettled(
+      symbols.map(sym => fetchAndCache(sym))
+    );
 
-    // ── 逐个从Finnhub拉取PE/PEG ──────────────────────────────────────────────
-    let successCount = 0, failCount = 0;
-
-    for (const sym of symbols) {
-      try {
-        const r = await fetch(
-          `https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${FINNHUB_KEY}`
-        );
-        if (r.ok) {
-          const data = await r.json();
-          const m = data?.metric || {};
-          const pe     = m['peNormalizedAnnual'] ?? m['peTTM'] ?? null;
-          const peg    = m['pegRatio'] ?? null;
-          const mktCap = m['marketCapitalization'] ?? null;
-          results[sym] = {
-            pe:        (pe  && pe  > 0 && pe  < 10000) ? parseFloat(pe.toFixed(2))  : null,
-            peg:       (peg && peg > 0 && peg < 100)   ? parseFloat(peg.toFixed(2)) : null,
-            marketCap: mktCap ? mktCap * 1e6 : null,
-          };
-          successCount++;
-        } else {
-          if (!results[sym]) results[sym] = { pe: null, peg: null, marketCap: null };
-          failCount++;
-        }
-      } catch(e) {
-        if (!results[sym]) results[sym] = { pe: null, peg: null, marketCap: null };
-        failCount++;
-      }
-      await delay(1100);
-    }
-
-    // ── 存入Redis ─────────────────────────────────────────────────────────────
-    const payload = encodeURIComponent(JSON.stringify({
-      data: results,
-      updatedAt: new Date().toISOString(),
-    }));
-    await fetch(`${KV_URL}/set/${encodeURIComponent(PE_KEY)}/${payload}`, {
-      headers: { Authorization: `Bearer ${KV_TOKEN}` },
-    });
+    const success = results.filter(r => r.status === 'fulfilled' && r.value).length;
+    const failed  = symbols.length - success;
 
     return res.status(200).json({
       message: 'PE/PEG cache updated',
       total: symbols.length,
-      success: successCount,
-      failed: failCount,
-      symbols_preview: symbols.slice(0, 5).join(',') + '...',
+      success,
+      failed,
       updatedAt: new Date().toISOString(),
     });
 
