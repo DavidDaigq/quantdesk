@@ -1,58 +1,67 @@
 // /api/earnings.js
-// 使用 Polygon.io 获取财报日期
-// Polygon /vX/reference/financials 包含历史财报日期
-// Polygon /v3/reference/tickers/{ticker}/events 包含即将到来的事件
+// 先查Finnhub upcoming earnings calendar（精确日期）
+// fallback到历史数据推算
 
-const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
+const FINNHUB_KEY = 'd7hs24pr01qu8vfmdv3gd7hs24pr01qu8vfmdv40';
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=3600');
 
-  const symbols = (req.query.symbols || '').toUpperCase().split(',').filter(Boolean).slice(0, 50);
+  const symbols = (req.query.symbols || '').toUpperCase().split(',').filter(Boolean).slice(0, 10);
   if (!symbols.length) return res.status(400).json({ error: 'symbols required' });
 
   const results = {};
-  const now = new Date();
+  const now   = new Date();
+  const from  = now.toISOString().slice(0, 10);
+  const to    = new Date(now.getTime() + 120 * 86400000).toISOString().slice(0, 10);
 
   await Promise.all(symbols.map(async sym => {
     let earningsDate = null;
     let earningsEst  = false;
 
     try {
-      // 方法1: Polygon financials - 获取最近4个季度报告日期
-      const r = await fetch(
-        `https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=4&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`
+      // 方法1: 查Finnhub未来120天的财报日历（精确日期）
+      const r1 = await fetch(
+        `https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&symbol=${sym}&token=${FINNHUB_KEY}`
       );
-
-      if (r.ok) {
-        const data = await r.json();
-        const reports = data.results || [];
-
-        if (reports.length > 0) {
-          // 最近一次财报日期
-          const lastReportDate = new Date(reports[0].period_of_report_date);
-          const daysSinceLast = (now - lastReportDate) / 86400000;
-
-          if (daysSinceLast >= 0 && daysSinceLast <= 120) {
-            // 最近一次财报在120天内，估算下次 = 上次 + 91天
-            const nextEst = new Date(lastReportDate.getTime() + 91 * 86400000);
-            if (nextEst > now) {
-              earningsDate = nextEst.toISOString().slice(0, 10);
-              earningsEst  = true;
-            }
+      if (r1.ok) {
+        const cal = await r1.json();
+        const items = cal.earningsCalendar || [];
+        if (items.length > 0) {
+          // 找最近的未来财报日期
+          const future = items
+            .filter(i => i.date && new Date(i.date) >= now)
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+          if (future.length > 0) {
+            earningsDate = future[0].date;
+            earningsEst  = false; // 精确日期
           }
+        }
+      }
 
-          // 如果两个报告之间间隔规律，用平均间隔估算
-          if (!earningsDate && reports.length >= 2) {
-            const d1 = new Date(reports[0].period_of_report_date);
-            const d2 = new Date(reports[1].period_of_report_date);
-            const gap = Math.abs((d1 - d2) / 86400000);
-            const useGap = (gap > 60 && gap < 120) ? gap : 91;
-            const nextEst = new Date(d1.getTime() + useGap * 86400000);
-            if (nextEst > now) {
-              earningsDate = nextEst.toISOString().slice(0, 10);
-              earningsEst  = true;
+      // 方法2: fallback - 用历史财报推算
+      if (!earningsDate) {
+        const r2 = await fetch(
+          `https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${FINNHUB_KEY}`
+        );
+        if (r2.ok) {
+          const rows = await r2.json();
+          if (Array.isArray(rows) && rows.length >= 2) {
+            const past = rows
+              .filter(r => r.actual !== null && r.period)
+              .sort((a, b) => new Date(b.period) - new Date(a.period));
+            if (past.length >= 2) {
+              const d1 = new Date(past[0].period);
+              const d2 = new Date(past[1].period);
+              const gap = Math.abs((d1 - d2).valueOf() / 86400000);
+              const useGap = (gap > 60 && gap < 120) ? gap : 91;
+              let nextEst = new Date(d1.getTime() + (useGap + 30) * 86400000);
+              if (nextEst <= now) nextEst = new Date(nextEst.getTime() + useGap * 86400000);
+              if (nextEst > now) {
+                earningsDate = nextEst.toISOString().slice(0, 10);
+                earningsEst  = true;
+              }
             }
           }
         }
