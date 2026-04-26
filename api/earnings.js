@@ -1,4 +1,9 @@
-const NINJAS_KEY = 'B8xYKluZsfD4kTprOJEJzyOXFuFCJ95D67FA36sV';
+// /api/earnings.js
+// 使用 Polygon.io 获取财报日期
+// Polygon /vX/reference/financials 包含历史财报日期
+// Polygon /v3/reference/tickers/{ticker}/events 包含即将到来的事件
+
+const KEY = 'ZxWffBFSyK9tS1iLeReFAyetjiV9x3nj';
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -8,50 +13,52 @@ module.exports = async function handler(req, res) {
   if (!symbols.length) return res.status(400).json({ error: 'symbols required' });
 
   const results = {};
+  const now = new Date();
 
   await Promise.all(symbols.map(async sym => {
     let earningsDate = null;
-    let earningsEst = null;
-    try {
-      const r = await fetch(
-        `https://api.api-ninjas.com/v1/earningscalendar?ticker=${sym}`,
-        { headers: { 'X-Api-Key': NINJAS_KEY } }
-      );
-      if (r.ok) {
-        const rows = await r.json();
-        if (rows.length) {
-          // Sort by date descending, get most recent
-          rows.sort((a,b) => new Date(b.date) - new Date(a.date));
-          const lastDate = new Date(rows[0].date);
-          const now = new Date();
+    let earningsEst  = false;
 
-          // If last earnings was recent (within 120 days), estimate next = last + 91 days
-          const daysSinceLast = (now - lastDate) / 86400000;
+    try {
+      // 方法1: Polygon financials - 获取最近4个季度报告日期
+      const r = await fetch(
+        `https://api.polygon.io/vX/reference/financials?ticker=${sym}&limit=4&sort=period_of_report_date&order=desc&timeframe=quarterly&apiKey=${KEY}`
+      );
+
+      if (r.ok) {
+        const data = await r.json();
+        const reports = data.results || [];
+
+        if (reports.length > 0) {
+          // 最近一次财报日期
+          const lastReportDate = new Date(reports[0].period_of_report_date);
+          const daysSinceLast = (now - lastReportDate) / 86400000;
+
           if (daysSinceLast >= 0 && daysSinceLast <= 120) {
-            const nextEst = new Date(lastDate.getTime() + 91*86400000);
-            earningsDate = nextEst.toISOString().slice(0,10);
-            earningsEst = true; // mark as estimated
-          } else if (daysSinceLast < 0) {
-            // Last date is in future = that IS the next earnings
-            earningsDate = rows[0].date;
-            earningsEst = false;
-          }
-          // If > 120 days ago, try to find pattern from multiple quarters
-          if (!earningsDate && rows.length >= 2) {
-            rows.sort((a,b) => new Date(b.date) - new Date(a.date));
-            const d1 = new Date(rows[0].date);
-            const d2 = new Date(rows[1].date);
-            const avgDays = (d1 - d2) / 86400000; // avg days between reports
-            const gap = avgDays > 60 && avgDays < 120 ? avgDays : 91;
-            const nextEst = new Date(d1.getTime() + gap*86400000);
+            // 最近一次财报在120天内，估算下次 = 上次 + 91天
+            const nextEst = new Date(lastReportDate.getTime() + 91 * 86400000);
             if (nextEst > now) {
-              earningsDate = nextEst.toISOString().slice(0,10);
-              earningsEst = true;
+              earningsDate = nextEst.toISOString().slice(0, 10);
+              earningsEst  = true;
+            }
+          }
+
+          // 如果两个报告之间间隔规律，用平均间隔估算
+          if (!earningsDate && reports.length >= 2) {
+            const d1 = new Date(reports[0].period_of_report_date);
+            const d2 = new Date(reports[1].period_of_report_date);
+            const gap = Math.abs((d1 - d2) / 86400000);
+            const useGap = (gap > 60 && gap < 120) ? gap : 91;
+            const nextEst = new Date(d1.getTime() + useGap * 86400000);
+            if (nextEst > now) {
+              earningsDate = nextEst.toISOString().slice(0, 10);
+              earningsEst  = true;
             }
           }
         }
       }
     } catch(e) {}
+
     results[sym] = { earningsDate, estimated: earningsEst };
   }));
 
